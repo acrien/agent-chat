@@ -564,16 +564,23 @@ class UserSession {
     //
     // This is the rule already written into `exercised.py` and not carried
     // here: a red run is evidence the thing BROKE, not evidence it was done.
-    // THE SOURCE DECLARES, THE TARGET SEARCHES. `ok` is the SDK saying the
-    // process ended without erroring — which a turn that read nothing also
-    // says. The code is put there by the reader or it is not there at all.
+    // THE READER CALLS, IT DOES NOT WRITE. `ok` is the SDK saying the process
+    // ended without erroring — which a turn that read nothing also says. And
+    // the earlier version, scanning the reply for a bracketed code, was a
+    // formatting rule the reader had to remember across sixty thousand
+    // characters; it was ignored four times, which is what a reminder does.
     //
-    // 101 read the batch · 102 read part of it · 190 could not · absent = 190,
-    // because a turn that died before writing looks exactly like one that
-    // ignored the instruction, and both establish nothing.
-    const declared = /\[RM3-REVIEW:\s*(\d{3})\]/g;
-    const seen = [...String(this.jobText ?? '').matchAll(declared)].map((m) => Number(m[1]));
-    const code = seen.length ? seen[seen.length - 1] : 0;
+    // `rm3 review done:101` is an ACTION. It happened or it did not, it is
+    // recorded by the thing that ran it, and there is no way to write prose
+    // that resembles a declaration without being one.
+    //
+    // 101 read the batch · 102 read part of it · 190 could not · no call = 190,
+    // because a turn that died before calling looks exactly like one that
+    // never meant to, and both establish nothing.
+    let code = 0;
+    try {
+      code = Number(JSON.parse(await run(RM3_BIN, ['review', 'declared'])).code ?? 0);
+    } catch { code = 0; }
     this.jobText = '';
     const read = ok && (code === 101 || code === 102);
     const action = read ? 'complete' : 'unclaim';
