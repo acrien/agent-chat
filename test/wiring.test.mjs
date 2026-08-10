@@ -260,16 +260,18 @@ guard('a field no emitter has ever sent still reaches the log', () => {
  * provenance the eye gets wrong — the same failure as a heading taking the
  * enforcement layer's colour from its wording.
  */
-guard('the pod stream gets its own section', () => {
+// The pod's rows used to be a second section here, fed by rainsmoke3's
+// pod_mirror job. The job was removed on 2026-08-10 and no emitter has set
+// `pod` since; what is left to check is that every row still reaches the log.
+guard('every beat row reaches the log', () => {
   handle({ t: 'heartbeat', attached: true, beating: true,
            beat: { at: now - 1, state: 'working', note: 'local' },
            recent: [{ at: now - 9, state: 'working', label: 'pulse check', note: 'here' },
-                    { at: now - 4, state: 'scheduled', label: 'pod/miss review',
-                      note: 'countdown started', pod: true }] });
+                    { at: now - 4, state: 'scheduled', label: 'miss review',
+                      note: 'countdown started' }] });
   const panel = dump(document.getElementById('beatBody')).join('\n');
-  assert.match(panel, /div\.beatLog\.podLog/, 'pod rows were not put in their own section');
-  assert.match(panel, /lab pod/, 'the section does not say which machine');
-  assert.match(panel, /countdown started/, 'the pod row lost its sentence');
+  assert.match(panel, /div\.beatLog/, 'no stream log rendered');
+  assert.match(panel, /countdown started/, 'a row lost its sentence');
 });
 
 /**
@@ -288,10 +290,30 @@ guard('the clear says what each phase actually means', () => {
   assert.match(tree, /handoff is now the first thing/, 'the done phase said nothing useful');
 });
 
+/**
+ * A RESTART IS NOT A CLEAR, and the line has to say which one is happening.
+ * Told "clearing" while the server goes down, a reader reads the disconnect
+ * that follows as a fault — and on 2026-08-10 the restart carried no handoff at
+ * all, so "clearing" would have been describing something that did not happen.
+ */
+guard('a restart says it is a restart, not a clear', () => {
+  handle({ t: 'clearing', phase: 'countdown', seconds: 10, restart: true, at: AT });
+  handle({ t: 'clearing', phase: 'restarting', restart: true, at: AT });
+  const tree = dump(dom.transcript).join('\n');
+  assert.match(tree, /restart in 10s/, 'the countdown called a restart a clear');
+  assert.match(tree, /handoff saved/, 'nothing said the note survived the restart');
+});
+
 guard('the /clear control is wired', () => {
   const button = document.getElementById('clearStart');
   assert.ok(button, 'no /clear control on the page');
   assert.equal(typeof button.handlers.click, 'function', '/clear has no handler');
+});
+
+guard('the /restart control is wired', () => {
+  const button = document.getElementById('restartStart');
+  assert.ok(button, 'no /restart control on the page');
+  assert.equal(typeof button.handlers.click, 'function', '/restart has no handler');
 });
 
 // The summary is LAST, and stays last. It was in the middle once: two cases

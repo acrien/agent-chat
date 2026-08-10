@@ -33,10 +33,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
+
+import * as store from './state.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(HERE, 'public');
@@ -210,7 +212,7 @@ const IMAGE_MEDIA_TYPES = new Map([
 const MAX_IMAGES_PER_TURN = 10;
 const MAX_IMAGE_CHARS = 5_000_000;    // base64 length, ~3.7 MB decoded
 const MAX_BODY_BYTES = 60_000_000;
-const HISTORY_REPLAY_LIMIT = 400;
+const HISTORY_REPLAY_LIMIT = 400;   // records sent to a newly attached page
 
 /**
  * What the session about to end is asked to write down.
@@ -238,10 +240,23 @@ const HANDOFF_PROMPT = [
   'questions.',
 ].join('\n');
 
-const HANDOFF_HEADER =
-  'You are continuing work after a context clear. The note below was written by '
-  + 'the session that just ended, about its own unfinished work. Treat it as the '
-  + 'state of the world, verify anything it claims is running, and continue.';     // records sent to a newly attached page
+/**
+ * What the successor is told before it reads the note.
+ *
+ * IT SAYS WHICH BOUNDARY IT CROSSED. After a `/clear` only the context is gone;
+ * after a RESTART the process is new too, so pids have changed, anything the
+ * previous session started in the foreground is dead, and the transcript above
+ * has a gap in it. A successor that assumed the first while living in the
+ * second would report a restart it cannot see as a mystery — this environment's
+ * standing trap (ENV.md), stated rather than left to be rediscovered.
+ */
+function handoffHeader(restarted) {
+  return 'You are continuing work after a context clear'
+    + (restarted ? ' and a restart of the server hosting this session' : '')
+    + '. The note below was written by the session that just ended, about its '
+    + 'own unfinished work. Treat it as the state of the world, verify anything '
+    + 'it claims is running, and continue.';
+}
 
 // --- pushable stream -------------------------------------------------------
 
@@ -313,43 +328,15 @@ function ensureUserDirs(userId) {
   return dir;
 }
 
+// The state file itself lives in state.mjs — one definition, testable without
+// booting a server, and the take-once rule for a parked handoff lives beside
+// the write it has to be atomic with.
 function readState(userId) {
-  try {
-    return JSON.parse(fs.readFileSync(path.join(userDir(userId), 'state.json'), 'utf8'));
-  } catch {
-    return {};
-  }
+  return store.read(userDir(userId));
 }
 
-/**
- * Everything this user chose, written so a crash cannot lose it.
- *
- * WRITTEN BESIDE AND RENAMED, NEVER IN PLACE. `writeFileSync` truncates the
- * file and then fills it; a crash, an OOM kill or a power cut in that window
- * leaves a partial file, and `readState` treats unparseable JSON as "no state"
- * — so the failure is not a corrupt settings file, it is a SILENT reset of the
- * model, the effort, the working directory and the SDK session id. The agent
- * would come back with no memory of the conversation and nothing would say
- * why. A rename is atomic on POSIX: a reader sees the old file or the new one.
- *
- * fsync before the rename, because rename ordering guarantees nothing about
- * the CONTENT reaching the disk — without it the rename can land and the bytes
- * can not, which is the same empty file by a longer route.
- */
 function writeState(userId, patch) {
-  const dir = ensureUserDirs(userId);
-  const next = { ...readState(userId), ...patch };
-  const target = path.join(dir, 'state.json');
-  const temporary = `${target}.tmp`;
-  const handle = fs.openSync(temporary, 'w');
-  try {
-    fs.writeFileSync(handle, JSON.stringify(next, null, 2));
-    fs.fsyncSync(handle);
-  } finally {
-    fs.closeSync(handle);
-  }
-  fs.renameSync(temporary, target);
-  return next;
+  return store.write(ensureUserDirs(userId), patch);
 }
 
 function transcriptPath(userId) {
@@ -441,6 +428,9 @@ class UserSession {
     this.beatWatch = null;
     this.beatSweep = null;
     this.lastBeat = null;
+    //: This session owes a handoff to a restart that is waiting for it. The
+    //: restart fires when nothing owes one — see `maybeRestart`.
+    this.restartPending = false;
     this.start();
     this.watchHeartbeat();
   }
@@ -494,10 +484,10 @@ class UserSession {
     // — "is anyone watching?" answered with "is a browser attached to THIS
     // server?" That was the same question while this was the only surface. It
     // stopped being the same question when the review moved to the lab pod,
-    // where nobody is attached BY DESIGN and the watching is done by the
-    // heartbeat mirroring the pod's stream to the owner's panel. Keeping it
-    // would mean the pod could never claim anything, silently, which reads
-    // exactly like a review that found nothing to do.
+    // where nobody is attached BY DESIGN — the pod's work is read from the
+    // pod's own page, afterwards. Keeping it would mean the pod could never
+    // claim anything, silently, which reads exactly like a review that found
+    // nothing to do.
     //
     // AND NOT `sdkSessionId` EITHER, which was the same mistake one layer
     // down. That id appears only after a turn has run — and delivering a job
@@ -875,9 +865,18 @@ class UserSession {
           // the successor would inherit half a note.
           const note = this.handoffText ?? '';
           this.handoffText = '';
+          const restarting = Boolean(this.clearing?.restart);
           if (note.trim()) this.finishClear(note);
-          else { this.handoffPending = false; this.clearing = null;
-                 this.emitError('the handoff came back empty — not clearing'); }
+          else {
+            // AN EMPTY NOTE STOPS THE RESTART TOO, and that is the stronger
+            // half: clearing on an empty note loses the context, restarting on
+            // one loses it and takes the process down after it. That is the
+            // exact state this whole path was built to stop happening.
+            this.handoffPending = false;
+            this.clearing = null;
+            if (restarting) this.restartAbort('the handoff came back empty — not restarting');
+            else this.emitError('the handoff came back empty — not clearing');
+          }
         }
         break;
       }
@@ -979,10 +978,11 @@ class UserSession {
    * that has the context. Nothing else could reconstruct it, and by the time
    * anything else could ask, it is gone.
    */
-  async startClear(seconds = 10) {
+  async startClear(seconds = 10, { restart = false } = {}) {
     if (this.clearing) return { already: true };
-    this.clearing = { at: Date.now(), seconds, phase: 'countdown' };
-    this.broadcast({ t: 'clearing', phase: 'countdown', seconds, at: Date.now() });
+    this.clearing = { at: Date.now(), seconds, phase: 'countdown', restart };
+    if (restart) this.restartPending = true;
+    this.broadcast({ t: 'clearing', phase: 'countdown', seconds, restart, at: Date.now() });
 
     await new Promise((r) => { this.clearTimer = setTimeout(r, seconds * 1000); });
     if (!this.clearing) return { cancelled: true };      // cancelled mid-count
@@ -1010,7 +1010,7 @@ class UserSession {
     }
 
     this.clearing.phase = 'handoff';
-    this.broadcast({ t: 'clearing', phase: 'handoff', at: Date.now() });
+    this.broadcast({ t: 'clearing', phase: 'handoff', restart, at: Date.now() });
     this.handoffPending = true;
     this.busy = true;
     this.input.push({
@@ -1024,9 +1024,16 @@ class UserSession {
   cancelClear() {
     clearTimeout(this.clearTimer);
     const was = Boolean(this.clearing);
+    const restart = Boolean(this.clearing?.restart);
     this.clearing = null;
     this.handoffPending = false;
-    if (was) this.broadcast({ t: 'clearing', phase: 'cancelled', at: Date.now() });
+    this.restartPending = false;
+    // CANCELLING ONE SESSION'S HANDOFF CANCELS THE RESTART. The restart was
+    // asked for on behalf of every session at once; going ahead without this
+    // one's note would restart the process and hand the successor a handoff
+    // from somebody else, which is worse than not restarting.
+    if (restart) restartAborted = true;
+    if (was) this.broadcast({ t: 'clearing', phase: 'cancelled', restart, at: Date.now() });
     return { cancelled: was };
   }
 
@@ -1040,7 +1047,9 @@ class UserSession {
   finishClear(text) {
     if (!this.handoffPending) return;
     this.handoffPending = false;
+    const restarting = Boolean(this.clearing?.restart);
     this.clearing = null;
+    if (restarting) return this.handOffAndRestart(text);
 
     const note = { t: 'notice', text: 'context cleared — the handoff below is what the new session starts with.', at: Date.now() };
     this.emit(note, { k: 'notice', ...note, t: undefined });
@@ -1052,27 +1061,123 @@ class UserSession {
     this.start({ fresh: true });
     this.busy = false;
     this.broadcast({ t: 'clearing', phase: 'done', at: Date.now() });
+    this.deliverHandoff(text, { restarted: false });
+  }
 
-    // THE NEW SESSION STARTS READING IMMEDIATELY, and says so.
-    //
-    // THE OWNER, 2026-08-10: "the new session needs to start reading the
-    // handoff, not waiting for user to input something."
-    //
-    // The push alone did start it — and started it INVISIBLY: a turn beginning
-    // with no bubble and no record, so the page showed the agent working on
-    // something the reader never saw arrive. A turn nobody can account for is
-    // the same defect as a turn that never happened, one of them just costs
-    // tokens too.
-    //
-    // It is a JOB bubble, not the owner's: they did not write this, the
-    // previous session did.
+  /**
+   * The same note, across a process boundary instead of inside one.
+   *
+   * WHAT WENT WRONG WITHOUT THIS, 2026-08-10 12:31. `/clear` was tested end to
+   * end in the pod and worked. Production then needed a RESTART — to pick up
+   * the very code that does the handoff — and a restart is a different path
+   * with none of this on it: the session id was cleared by hand, the process
+   * was re-execed, and the successor came up with no context, nothing pushed,
+   * and no idea a predecessor had existed. The note had been hand-written into
+   * a file and committed, which nothing here reads. A handoff that depends on
+   * the next session thinking to go looking is not a handoff.
+   *
+   * SO THE NOTE GOES TO DISK BEFORE THE KILL. It is the one artefact that
+   * cannot be reconstructed afterwards — the session that holds the context is
+   * the session about to be terminated — so it is parked first, and the restart
+   * is only started once it is written.
+   *
+   * THE RESTART IS SPAWNED, NOT PERFORMED. `ops/restart.sh` reads the argv,
+   * cwd and exe from /proc BEFORE killing anything, so the port, the data
+   * directory and above all the token survive: a restart that minted a new
+   * token would silently stop authorising the link in the owner's browser while
+   * the page looked identical. Detached, because everything after the kill has
+   * to already be running somewhere that is not this process.
+   */
+  handOffAndRestart(text) {
+    this.restartPending = false;
+    // KEPT, because parking drops it and a restart that does not happen has to
+    // be able to put it back. The live query is still running and still knows
+    // this id; losing it here would cost the context anyway, which is the exact
+    // thing not restarting was supposed to protect.
+    const was = this.sdkSessionId;
+    try {
+      store.parkHandoff(userDir(this.userId), text, 'restart');
+    } catch (err) {
+      // NOTHING IS RESTARTED IF THE NOTE DID NOT LAND. The session is still
+      // alive and still holds its context; a restart now would throw that away
+      // to no purpose, which is exactly the failure this method exists for.
+      this.restartAbort(`could not write the handoff (${err.message}) — not restarting`);
+      return;
+    }
+    this.sdkSessionId = null;
+    const note = {
+      t: 'notice',
+      text: `handoff saved (${text.length} chars) — restarting; the next session starts with it.`,
+      at: Date.now(),
+    };
+    this.emit(note, { k: 'notice', ...note, t: undefined });
+    this.broadcast({ t: 'clearing', phase: 'restarting', restart: true, at: Date.now() });
+
+    // A RESTART THAT CANNOT BE STARTED IS NOT A QUIET NO-OP HERE. The note is
+    // already parked and this session's id is already dropped; leaving it there
+    // would mean a server that kept running with its context thrown away, and a
+    // handoff delivered at some unrelated future boot. Whatever went wrong is
+    // said, and the note is unparked with it.
+    const out = maybeRestart();
+    if (!out.restarting && !out.waiting) {
+      this.sdkSessionId = was;
+      writeState(this.userId, { sessionId: was });
+      this.restartAbort(`could not restart: ${out.why} — the handoff was dropped and this session kept its context`);
+    }
+  }
+
+  /**
+   * A restart that is not going to happen must say so and let go of the claim.
+   *
+   * The parked note is dropped in the same breath. A note left on disk after a
+   * cancelled restart is delivered to whoever boots next — a successor handed a
+   * handoff from a session that never ended, describing work that has moved on.
+   */
+  restartAbort(why) {
+    this.restartPending = false;
+    this.busy = false;
+    try { store.write(userDir(this.userId), { handoff: null }); } catch { /* nothing parked */ }
+    this.emitError(why);
+    this.broadcast({ t: 'clearing', phase: 'cancelled', restart: true, at: Date.now() });
+    restartAborted = true;
+  }
+
+  /**
+   * Hand the note to a session that has none, and let it start reading.
+   *
+   * THE NEW SESSION STARTS READING IMMEDIATELY, and says so.
+   *
+   * THE OWNER, 2026-08-10: "the new session needs to start reading the handoff,
+   * not waiting for user to input something."
+   *
+   * The push alone did start it — and started it INVISIBLY: a turn beginning
+   * with no bubble and no record, so the page showed the agent working on
+   * something the reader never saw arrive. A turn nobody can account for is the
+   * same defect as a turn that never happened, one of them just costs tokens
+   * too.
+   *
+   * It is a JOB bubble, not the owner's: they did not write this, the previous
+   * session did.
+   *
+   * ONE DEFINITION FOR BOTH ROUTES. `/clear` calls it in the process that wrote
+   * the note; a restart calls it in the process that comes after. Two copies
+   * would drift the first time either half changed, and the restart half is the
+   * one nobody watches.
+   */
+  deliverHandoff(text, { restarted = true } = {}) {
     const at = Date.now();
-    const event = { t: 'job', name: 'handoff', label: 'handoff',
-                    headline: `picking up from the previous session — ${text.length} chars of state`, at };
+    const event = {
+      t: 'job',
+      name: 'handoff',
+      label: 'handoff',
+      headline: `picking up from the ${restarted ? 'session before the restart' : 'previous session'}`
+        + ` — ${text.length} chars of state`,
+      at,
+    };
     this.emit(event, { k: 'job', ...event, t: undefined });
     this.input.push({
       type: 'user',
-      message: { role: 'user', content: `${HANDOFF_HEADER}\n\n${text}` },
+      message: { role: 'user', content: `${handoffHeader(restarted)}\n\n${text}` },
       parent_tool_use_id: null,
     });
     this.busy = true;
@@ -1111,6 +1216,101 @@ function sessionFor(userId) {
     sessions.set(userId, s);
   }
   return s;
+}
+
+// --- restart, with the context carried over --------------------------------
+
+/** The script that outlives this process. It re-execs what /proc says was run. */
+const RESTART_SH = path.join(HERE, 'ops', 'restart.sh');
+
+/**
+ * One session refused, so nobody restarts. Sticky for the life of the process:
+ * a refusal means a note was not written, and the run that was going to carry
+ * it is the run being abandoned.
+ */
+let restartAborted = false;
+
+/**
+ * Restart once every session that owed a handoff has parked one.
+ *
+ * WHY A CHECK AND NOT A CALLBACK. Each session writes its own note when its own
+ * turn lands, and the turns land at different times. The first one finishing is
+ * not the signal to restart — the second session's note would be being written
+ * into a process that is already being killed, which is the loss this exists to
+ * prevent, arrived at from the other side.
+ */
+function maybeRestart(why = 'handoff parked') {
+  if (restartAborted) return { restarting: false, why: 'a handoff was refused' };
+  // WAITING IS NOT FAILING, and the caller has to be able to tell them apart:
+  // one means "somebody else is still writing", the other means "this is not
+  // going to happen" and has to be said out loud. Returning false for both
+  // would make a broken restart script look exactly like a slow session.
+  if ([...sessions.values()].some((s) => s.restartPending)) return { waiting: true };
+  return spawnRestart(why);
+}
+
+/**
+ * Hand the restart to a process that is not about to die.
+ *
+ * NOTHING HERE VERIFIES IT CAME BACK, and it cannot: the checking half happens
+ * after the checker is gone. That is rainsmoke3's revive job — `rm3 revive
+ * expect` — and it is armed by whoever asks for the restart, not from inside
+ * the blast radius.
+ */
+function spawnRestart(why) {
+  if (!fs.existsSync(RESTART_SH)) {
+    return { restarting: false, why: `no restart script at ${RESTART_SH}` };
+  }
+  try {
+    const child = spawn(RESTART_SH, [String(process.pid)], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+    console.log(`restart requested (${why}) — pid ${process.pid}`);
+    return { restarting: true, pid: process.pid };
+  } catch (err) {
+    return { restarting: false, why: `could not start ${RESTART_SH}: ${err.message}` };
+  }
+}
+
+/**
+ * What a caller outside this process asks for: restart, but not empty-handed.
+ *
+ * IT ACTS ON EVERY LIVE SESSION, because the process is shared and they all
+ * lose their context together. A caller holding the server token has no user
+ * cookie and no business naming one — see the health route on why that gate is
+ * where it is.
+ *
+ * NO SESSION MEANS NOTHING TO HAND OFF, and it restarts immediately. A server
+ * nobody has spoken to has no context to lose, and making it wait for a handoff
+ * that cannot be written would turn "restart it" into "it did nothing, silently".
+ */
+function restartWithHandoff(seconds = 10) {
+  restartAborted = false;
+  const live = [...sessions.values()];
+  if (!live.length) return { ...spawnRestart('no session to hand off'), handoffs: 0 };
+
+  // A SESSION ALREADY CLEARING DOES NOT START A SECOND ONE, and `startClear`
+  // says so by returning `already`. Reporting `started: true` over the top of
+  // that is the shape this project keeps filing: the caller is told the thing
+  // it asked for is happening, the countdown it is watching belongs to a plain
+  // /clear, and the restart never comes. So the answer names what each session
+  // actually did, and says plainly when none of them started.
+  // NOT AWAITED, AND THEREFORE NOT ASKED. `startClear` is async — it resolves
+  // when the countdown and the handoff are over — so its `already` verdict is
+  // inside a promise this cannot wait for without waiting out the countdown it
+  // is starting. The state it reads is the same state `startClear` re-checks.
+  const armed = live.filter((session) => {
+    if (session.clearing) return false;
+    session.startClear(seconds, { restart: true });
+    return true;
+  });
+  if (!armed.length) {
+    restartAborted = true;
+    return { started: false, why: 'every session is already clearing — cancel that first', handoffs: 0 };
+  }
+  return { started: true, seconds, handoffs: armed.length, busy: live.length - armed.length };
 }
 
 // --- HTTP ------------------------------------------------------------------
@@ -1242,6 +1442,26 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    // --- restart, with a handoff (no session required, for the same reason) ---
+    //
+    // BESIDE HEALTH, ABOVE THE SIGN-IN GATE. The caller is whatever is
+    // restarting the server: a script, a job, or the agent itself from a shell.
+    // It holds the server token and no user cookie, and behind the gate this
+    // answered 401 to the only caller that ever needs it — which is how the
+    // handoff gets skipped and the restart happens anyway, by hand, empty.
+    //
+    // `cancel` is here rather than on /api/clear because a restart is not one
+    // user's clear: it was started for every session at once and it has to be
+    // stoppable the same way.
+    if (url === '/api/restart' && req.method === 'POST') {
+      const { cancel, seconds } = await readBody(req);
+      if (cancel) {
+        restartAborted = true;
+        return json(res, 200, { cancelled: [...sessions.values()].map((s) => s.cancelClear()) });
+      }
+      return json(res, 200, restartWithHandoff(Number(seconds) > 0 ? Number(seconds) : 10));
+    }
+
     // --- identity (no session required) ---
     if (url === '/api/me') {
       const user = currentUser(req);
@@ -1320,10 +1540,14 @@ const server = http.createServer(async (req, res) => {
     // and this passes both through — so a job added there needs no change here
     // and none on the page.
     if (url === '/api/clear' && req.method === 'POST') {
-      const { cancel } = await readBody(req);
+      const { cancel, restart } = await readBody(req);
       if (cancel) return json(res, 200, session.cancelClear());
-      session.startClear(10);            // not awaited: the countdown is the point
-      return json(res, 200, { started: true, seconds: 10 });
+      // The same countdown and the same handoff either way; `restart` decides
+      // only where the note is handed over — to the session this process starts
+      // next, or to the process that starts after this one dies.
+      if (restart) restartAborted = false;
+      session.startClear(10, { restart: Boolean(restart) });   // not awaited: the countdown is the point
+      return json(res, 200, { started: true, seconds: 10, restart: Boolean(restart) });
     }
 
     if (url === '/api/jobs') {
@@ -1502,13 +1726,35 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
  * empty at this point and would have made the marker appear only for whoever
  * happened to connect during the first request, which is nobody.
  */
-try {
-  const usersDir = path.join(DATA_DIR, 'users');
-  for (const userId of fs.readdirSync(usersDir)) {
+for (const userId of knownUsers()) {
+  try {
     if (!fs.existsSync(transcriptPath(userId))) continue;   // never spoke here
     appendRecord(userId, {
       k: 'notice',
       text: `the server restarted and is back (pid ${process.pid}).`,
     });
+
+    /**
+     * AND THE HANDOFF, IF THE PROCESS THAT DIED LEFT ONE.
+     *
+     * This is the far side of `handOffAndRestart`, and the only place the note
+     * is read. Taking it CLEARS it first (state.mjs), so a server that crashes
+     * during this turn hands the next boot nothing rather than the same note
+     * again — a crash loop that re-reads a handoff pays for it every time and,
+     * from the page, looks like an agent talking to itself.
+     *
+     * The session is constructed here rather than waiting for a browser: the
+     * point of the note is that the successor starts reading it, and on this
+     * machine nobody may open the page for hours. A pod is the extreme case —
+     * nothing ever attaches to it by design.
+     */
+    const handoff = store.takeHandoff(userDir(userId));
+    if (handoff) sessionFor(userId).deliverHandoff(handoff.text);
+  } catch (err) {
+    // PER USER, so one unreadable directory cannot silently cost every other
+    // user their handoff. A marker that cannot be written must not stop the
+    // server — but a handoff dropped here is a session's whole context, so it
+    // is said out loud rather than swallowed.
+    console.error(`startup (${userId}): ${err.message}`);
   }
-} catch { /* a marker that cannot be written must not stop the server */ }
+}

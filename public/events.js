@@ -51,12 +51,19 @@ export function handle(ev) {
       // ONE LINE THAT REWRITES ITSELF, not four notices. The phases are one
       // event moving through states, and a reader wants to know where it is
       // now — not to reconstruct that from a list.
+      //
+      // THE WORD CHANGES WITH THE DESTINATION. A restart drops the context AND
+      // the process, and telling the reader "clearing" while the server is
+      // about to go down describes the smaller half of what is happening — they
+      // would read the disconnect that follows as a fault.
+      const what = ev.restart ? 'restart' : 'clear';
       const text = {
-        countdown: `context clear in ${ev.seconds}s — press /clear again to cancel`,
+        countdown: `context ${what} in ${ev.seconds}s — press /${what} again to cancel`,
         waiting: 'waiting for the current turn to finish — the handoff runs after it',
-        handoff: 'writing the handoff… the clear happens when it lands, not on a timer',
-        cancelled: 'clear cancelled',
+        handoff: `writing the handoff… the ${what} happens when it lands, not on a timer`,
+        cancelled: `${what} cancelled`,
         done: 'context cleared — the handoff is now the first thing this session knows',
+        restarting: 'handoff saved — restarting; the next session opens with it',
       }[ev.phase] ?? ev.phase;
       notice(text);
       break;

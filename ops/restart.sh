@@ -53,7 +53,24 @@ if [ -d "/proc/$PID" ]; then
 fi
 
 cd "$CWD" || { echo "restart: cannot enter $CWD" >> "$LOG"; exit 1; }
-setsid "${ARGV[@]}" >> "$LOG" 2>&1 &
+
+# SETSID IS NOT EVERYWHERE, and the one place it is missing is the place this
+# most needed to work. Measured 2026-08-10 in the lab pod: `command -v setsid`
+# finds nothing — util-linux is not in that image — so this line would have run
+# the kill, failed to start anything, and left the pod's page dead with the
+# reason in a log nobody was reading. The pod exists to fail differently from
+# production; this is the shape where that costs the thing being tested.
+#
+# It is a new session so the server outlives whoever asked for the restart. When
+# that is unavailable, `nohup` plus a background job survives the hangup, which
+# is the half that actually matters here: the caller is already detached (the
+# server spawns this with its own session) and exits immediately either way.
+if command -v setsid >/dev/null 2>&1; then
+  setsid "${ARGV[@]}" >> "$LOG" 2>&1 &
+else
+  echo "restart: no setsid — starting with nohup instead" >> "$LOG"
+  nohup "${ARGV[@]}" >> "$LOG" 2>&1 &
+fi
 NEW=$!
 echo "restart: started pid $NEW" >> "$LOG"
 echo "$NEW"

@@ -140,24 +140,15 @@ export function renderBeat() {
 
   const recent = (beatState.recent ?? []).slice(-BEAT_ROWS).reverse();
   if (!recent.length) return;
-  // TWO SECTIONS, BECAUSE THEY ARE TWO MACHINES. Interleaving them by time
-  // would read as one stream, and the owner would have to check every row's
-  // label to know which box it happened on — a provenance you have to look up
-  // is a provenance the eye gets wrong. The pod's rows are contained the same
-  // way the pod's mistakes are.
-  const here = recent.filter((r) => !r.pod);
-  const pod = recent.filter((r) => r.pod);
-  if (here.length) {
-    const log = el('div', 'beatLog');
-    for (const row of here) log.append(streamRow(row));
-    body.append(log);
-  }
-  if (pod.length) {
-    const podLog = el('div', 'beatLog podLog');
-    podLog.append(el('div', 'podHead', 'lab pod — aelimain'));
-    for (const row of pod) podLog.append(streamRow(row));
-    body.append(podLog);
-  }
+  // ONE MACHINE, ONE SECTION. There were two — the pod's rows were carried
+  // here by rainsmoke3's pod_mirror job and kept apart, because a pod row
+  // rendered as a local row claims a provenance it cannot support. That job was
+  // removed on 2026-08-10 and nothing else has ever set `pod`, so the second
+  // section became a rendering for rows no emitter can produce. The pod is read
+  // on the pod's own page.
+  const log = el('div', 'beatLog');
+  for (const row of recent) log.append(streamRow(row));
+  body.append(log);
 }
 
 /**

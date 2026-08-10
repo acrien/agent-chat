@@ -59,6 +59,18 @@ document.getElementById('clearStart')?.addEventListener('click', async () => {
   setTimeout(() => { clearArmed = false; }, 11000);
 });
 
+// THE SAME HANDOFF, ONE BOUNDARY FURTHER. /clear keeps the process and drops
+// the context; this drops both, which is what "restart this session" has always
+// meant here — and doing it by hand is what left a successor with nothing on
+// 2026-08-10. A button, because a mechanism reachable only by remembering a
+// curl command is a mechanism nobody uses.
+let restartArmed = false;
+document.getElementById('restartStart')?.addEventListener('click', async () => {
+  await post('/api/restart', restartArmed ? { cancel: true } : {});
+  restartArmed = !restartArmed;
+  setTimeout(() => { restartArmed = false; }, 11000);
+});
+
 els.model.addEventListener('change', async () => {
   await post('/api/model', { model: els.model.value });
   fillEffort(els.model.value);
