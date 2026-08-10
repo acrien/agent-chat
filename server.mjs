@@ -408,7 +408,23 @@ class UserSession {
    * which would hand the agent the same turns on every sweep at full price.
    */
   async claimJob() {
-    if (this.busy || !this.clients.size || !this.sdkSessionId) return;
+    // NO CONNECTED-CLIENT REQUIREMENT. It used to also demand `this.clients.size`
+    // — "is anyone watching?" answered with "is a browser attached to THIS
+    // server?" That was the same question while this was the only surface. It
+    // stopped being the same question when the review moved to the lab pod,
+    // where nobody is attached BY DESIGN and the watching is done by the
+    // heartbeat mirroring the pod's stream to the owner's panel. Keeping it
+    // would mean the pod could never claim anything, silently, which reads
+    // exactly like a review that found nothing to do.
+    //
+    // AND NOT `sdkSessionId` EITHER, which was the same mistake one layer
+    // down. That id appears only after a turn has run — and delivering a job
+    // turn is what would start one. A pod that has never been spoken to could
+    // therefore never be spoken to, and the symptom is silence rather than an
+    // error. What is actually required is somewhere to push, which `start()`
+    // created before any of this: the id is for RESUMING a session, not for
+    // having one.
+    if (this.busy || !this.input) return;
     let offer;
     try {
       offer = JSON.parse(await run(RM3_BIN, ['review', 'claim']));
