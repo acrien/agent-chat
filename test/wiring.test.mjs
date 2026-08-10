@@ -64,6 +64,22 @@ guard('the result line reports tokens, not a price', () => {
   assert.match(tree, /tokens: 26 in · 13k out · 12\.8M cached/);
 });
 
+/**
+ * GREEN IS A PROVENANCE, NOT A TOPIC. A heading reading "rainsmoke3 caught two
+ * of mine" took the enforcement layer's colour from its wording alone, above a
+ * tally that read no issues — the page asserting a source nothing had checked.
+ * Only a declared `§§` callout may be green.
+ */
+guard('writing about rainsmoke3 does not borrow its colour', () => {
+  handle({ t: 'block_start', lane: 'main', index: 1, kind: 'text' });
+  handle({ t: 'delta', lane: 'main', index: 1, kind: 'text',
+           text: '## rainsmoke3 caught two of mine\n\nProse.\n\n§§ Rainsmoke - Dangling (x): y\n' });
+  handle({ t: 'block_stop', lane: 'main', index: 1 });
+  const tree = dump(dom.transcript).join('\n');
+  const green = (tree.match(/section\.sec\.rm3/g) || []).length;
+  assert.equal(green, 1, `a heading about rainsmoke3 took its colour (${green} green sections)`);
+});
+
 guard('a rainsmoke3 section renders with its severities', () => {
   handle({ t: 'section', source: 'rainsmoke3', at: AT, headline: '1 issue',
            counts: [{ label: 'firelane', n: 1 }],

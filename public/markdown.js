@@ -84,9 +84,22 @@ export function renderMarkdown(target, text) {
  * that is wrong from tomorrow.
  *
  * So the rule is the attribution itself. Anything rainsmoke3 surfaces is
- * labelled `Rainsmoke; …` at the point it is written, and that prefix — not
+ * labelled `Rainsmoke - …` at the point it is written, and that prefix — not
  * its subject, not its vocabulary — is what makes it green. A detector shipped
  * next year needs no entry here, because there are no entries here.
+ *
+ * AND ONLY A CALLOUT CAN CLAIM IT. THE OWNER, 2026-08-09: "so I see a green
+ * tab, is that just talking about the previous rounds?" — asked of a reply
+ * whose green section was headed "rainsmoke3 caught two of mine", sitting above
+ * a tally that read no issues. The heading was the agent's own prose ABOUT
+ * rainsmoke3, and it took rainsmoke3's colour purely from its wording, so the
+ * page asserted a provenance nothing had checked. That is the session's most
+ * expensive shape arriving through the stylesheet: a signal that means "this
+ * came from the enforcement layer" awarded to any sentence that mentions it.
+ *
+ * A `§§` callout is WRITTEN as an attribution and cannot be typed by accident;
+ * a heading is a sentence. So headings are always the agent's voice, whatever
+ * they are about, and only declared callouts can be green.
  */
 /* NO WORD BOUNDARY. `rainsmoke\b` does not match "Rainsmoke3" — the boundary
    needs a non-word character after "rainsmoke", and a digit is a word
@@ -95,6 +108,7 @@ export function renderMarkdown(target, text) {
    and a prefix is what it now says. */
 const RAINSMOKE = /^\s*rainsmoke/i;
 
+/** The role a DECLARED callout label carries. Headings do not call this. */
 export function roleOf(label) {
   return RAINSMOKE.test(label) ? 'rm3' : 'ask';
 }
@@ -141,7 +155,7 @@ function blocks(target, lines) {
     if (heading) {
       const level = heading[1].length;
       while (open.length && open[open.length - 1].level >= level) open.pop();
-      const section = el('section', `sec ${roleOf(heading[2])}`);
+      const section = el('section', 'sec ask');   // a heading is the agent's own
       into().append(section);              // BEFORE the push: it belongs to the
       open.push({ level, node: section });  // section above it, not to itself
       inline(section.appendChild(el(`h${level}`)), heading[2]);
