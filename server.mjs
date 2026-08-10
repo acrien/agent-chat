@@ -987,9 +987,28 @@ class UserSession {
     await new Promise((r) => { this.clearTimer = setTimeout(r, seconds * 1000); });
     if (!this.clearing) return { cancelled: true };      // cancelled mid-count
 
-    // THE HANDOFF IS A TURN LIKE ANY OTHER, so it is subject to being busy.
-    // Waiting is right: interrupting the owner's turn to write a handoff about
-    // it would lose the very thing the handoff is for.
+    // WAIT FOR THE CURRENT TURN, AND SAY THAT IS WHAT IS HAPPENING.
+    //
+    // Two reasons, and the second is a bug I would have walked into. Pushing
+    // the handoff mid-turn queues it — fine — but `handoffPending` would then
+    // be true when the RUNNING turn's `result` arrived, and the clear would
+    // fire on that, taking the current reply as the handoff. The note would be
+    // whatever was being said at the time, and the real handoff would run into
+    // a session that had already been cleared.
+    //
+    // The first reason is the plain one: interrupting a turn to write a
+    // handoff about it loses the thing the handoff is for. Waiting is right —
+    // and the stream used to say "writing the handoff" while it was actually
+    // waiting, which is a phase message lying about the phase.
+    if (this.busy) {
+      this.clearing.phase = 'waiting';
+      this.broadcast({ t: 'clearing', phase: 'waiting', at: Date.now() });
+      while (this.busy) {
+        await new Promise((r) => setTimeout(r, 500));
+        if (!this.clearing) return { cancelled: true };
+      }
+    }
+
     this.clearing.phase = 'handoff';
     this.broadcast({ t: 'clearing', phase: 'handoff', at: Date.now() });
     this.handoffPending = true;

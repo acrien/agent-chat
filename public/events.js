@@ -53,6 +53,7 @@ export function handle(ev) {
       // now — not to reconstruct that from a list.
       const text = {
         countdown: `context clear in ${ev.seconds}s — press /clear again to cancel`,
+        waiting: 'waiting for the current turn to finish — the handoff runs after it',
         handoff: 'writing the handoff… the clear happens when it lands, not on a timer',
         cancelled: 'clear cancelled',
         done: 'context cleared — the handoff is now the first thing this session knows',
