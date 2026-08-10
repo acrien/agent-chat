@@ -1012,9 +1012,23 @@ class UserSession {
     this.busy = false;
     this.broadcast({ t: 'clearing', phase: 'done', at: Date.now() });
 
-    // The handoff goes in as the first thing the new session sees. It is the
-    // agent's own words about its own work, which is the only summary that was
-    // ever going to survive the boundary.
+    // THE NEW SESSION STARTS READING IMMEDIATELY, and says so.
+    //
+    // THE OWNER, 2026-08-10: "the new session needs to start reading the
+    // handoff, not waiting for user to input something."
+    //
+    // The push alone did start it — and started it INVISIBLY: a turn beginning
+    // with no bubble and no record, so the page showed the agent working on
+    // something the reader never saw arrive. A turn nobody can account for is
+    // the same defect as a turn that never happened, one of them just costs
+    // tokens too.
+    //
+    // It is a JOB bubble, not the owner's: they did not write this, the
+    // previous session did.
+    const at = Date.now();
+    const event = { t: 'job', name: 'handoff', label: 'handoff',
+                    headline: `picking up from the previous session — ${text.length} chars of state`, at };
+    this.emit(event, { k: 'job', ...event, t: undefined });
     this.input.push({
       type: 'user',
       message: { role: 'user', content: `${HANDOFF_HEADER}\n\n${text}` },
