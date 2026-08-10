@@ -383,8 +383,49 @@ class UserSession {
       // below still reports, just at its own pace. Never the chat's problem.
       this.beatWatch.on('error', () => { this.beatWatch?.close(); this.beatWatch = null; });
     } catch { this.beatWatch = null; }
-    this.beatSweep = setInterval(() => this.pushHeartbeat(), BEAT_SWEEP_MS);
+    this.beatSweep = setInterval(() => {
+      this.pushHeartbeat();
+      this.claimJob();
+    }, BEAT_SWEEP_MS);
     this.pushHeartbeat();
+  }
+
+  /**
+   * Take whatever a rainsmoke3 job has left for the agent, and run it.
+   *
+   * THE POLLER CANNOT CALL THIS DIRECTLY. It is a systemd service with no idea
+   * whether a chat server exists, let alone which port; and a job that posted
+   * into a dead port would lose the batch silently. So the job writes its
+   * request down and this claims it — the offer waits as long as it has to.
+   *
+   * NEVER MID-TURN. Pushing into `input` while the agent is answering
+   * interleaves a job's question with the owner's, and the reply that comes
+   * back belongs to neither. A skipped sweep costs one interval; the offer is
+   * still there.
+   *
+   * CLAIMING IS WHAT ADVANCES THE CURSOR, on rainsmoke3's side, inside the
+   * claim. That is deliberate: this cannot take a batch and forget to advance,
+   * which would hand the agent the same turns on every sweep at full price.
+   */
+  async claimJob() {
+    if (this.busy || !this.clients.size || !this.sdkSessionId) return;
+    let offer;
+    try {
+      offer = JSON.parse(await run(RM3_BIN, ['review', 'claim']));
+    } catch {
+      return;   // rainsmoke3 absent or unhappy: nothing to deliver
+    }
+    if (!offer?.prompt) return;
+    this.busy = true;
+    const at = Date.now();
+    const event = { t: 'job', name: offer.job, label: offer.label,
+                    headline: offer.headline, at };
+    this.emit(event, { k: 'job', ...event, t: undefined });
+    this.input.push({
+      type: 'user',
+      message: { role: 'user', content: offer.prompt },
+      parent_tool_use_id: null,
+    });
   }
 
   stopHeartbeat() {

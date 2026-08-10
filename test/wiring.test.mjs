@@ -57,6 +57,22 @@ guard('a user turn and a reply land in one bubble', () => {
   assert.match(tree, /section\.sec\.ask/, 'markdown module did not render a section');
 });
 
+/**
+ * A JOB'S TURN MAY NOT WEAR THE OWNER'S FACE. The SDK takes input only as a
+ * user message, so a job's question is indistinguishable from the owner's on
+ * the wire; if the page drew it as a user bubble, the transcript would show
+ * them asking for something they never asked for.
+ */
+guard('a job turn is not drawn as the owner', () => {
+  handle({ t: 'job', name: 'miss_review', label: 'miss review',
+           headline: '40 turns to read', at: AT });
+  const tree = dump(dom.transcript).join('\n');
+  assert.match(tree, /div\.job/, 'no job bubble');
+  const owner = (tree.match(/div\.user/g) || []).length;
+  assert.equal(owner, 1, `a job turn drew a user bubble (${owner} found, 1 expected)`);
+  assert.match(tree, /rainsmoke3 job/, 'the bubble does not say whose turn it is');
+});
+
 guard('the result line reports tokens, not a price', () => {
   handle({ t: 'result', subtype: 'success', turns: 14, durationMs: 322300,
            usage: { input_tokens: 26, cache_read_input_tokens: 12839496, output_tokens: 12507 } });

@@ -142,6 +142,31 @@ export function userBubble(text, images, meta = {}) {
   return wrap;
 }
 
+/**
+ * A TURN THE OWNER DID NOT ASK FOR, AND SAYING SO.
+ *
+ * The miss review hands the agent a batch of turns to read. The SDK takes
+ * input only as a user message, so on the wire it is indistinguishable from
+ * the owner typing — and if the page drew it as a user bubble, the transcript
+ * would show the owner asking for something they never asked for. Read back
+ * later, by a person or by the review itself, that is a fabricated request.
+ *
+ * So it gets its own bubble, its own label, and the job's name. Nothing about
+ * it can be mistaken for the owner's voice, which is the same rule the green
+ * tab follows: a surface may not claim a provenance it cannot verify.
+ *
+ * THE OWNER, 2026-08-09: "yes, the job as user chat bubble, I put 'user' in
+ * quote, it would be a job chat bubble".
+ */
+export function jobBubble(ev) {
+  const wrap = el('div', 'msg');
+  wrap.append(stamp(ev.label || ev.name || 'job', { at: ev.at }));
+  const bubble = el('div', 'job');
+  bubble.append(el('div', 'jobTag', 'rainsmoke3 job — not the owner'));
+  if (ev.headline) bubble.append(el('div', 'text', ev.headline));
+  return wrap.appendChild(bubble), wrap;
+}
+
 export function toolCard(lane, name, input) {
   const card = el('details', 'tool act');
   card.append(el('summary', null, `${name}  ${summarize(input)}`));
@@ -175,6 +200,11 @@ export function renderHistory(items) {
         closeLanes();
         if (transcript.firstChild) add(el('div', 'divider turn'), false);
         add(userBubble(item.text, item.images, { at: item.at }), false);
+        break;
+      case 'job':
+        closeLanes();
+        if (transcript.firstChild) add(el('div', 'divider turn'), false);
+        add(jobBubble(item), false);
         break;
       case 'turn':
         // Replayed turns carry the model and effort they actually ran on, so

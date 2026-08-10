@@ -189,6 +189,23 @@ main {
 .stamp .when { color: var(--dim); }
 
 .user { background: var(--user); border-radius: 8px; padding: 5px 12px; }
+/* A JOB'S TURN, WHICH IS NOT THE OWNER'S.
+   Deliberately not `--user`: the owner's green-grey means one thing, and a
+   machine-started turn wearing it would put words in their mouth in a
+   transcript read back later. Rainsmoke's own hue instead, at a rail rather
+   than a fill — this is its voice, and the fill belongs to the owner alone. */
+.job {
+  background: var(--panel);
+  border-radius: 8px;
+  border-left: 3px solid var(--role-good);
+  padding: 5px 12px;
+}
+.job .jobTag {
+  color: var(--role-good-quiet);
+  font-size: .84em;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
 .text { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* --- rendered markdown ---

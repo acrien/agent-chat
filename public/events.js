@@ -6,8 +6,9 @@
 import { add, atBottom, busy, el, els, notice, setBusy, transcript } from './dom.js';
 import { chime } from './chime.js';
 import {
-  blockAt, closeLanes, laneContainer, blockElement, makeBlock, renderHistory,
-  rememberTurn, resultLine, sectionPanel, toolCard, toolCards, userBubble,
+  blockAt, closeLanes, jobBubble, laneContainer, blockElement, makeBlock,
+  renderHistory, rememberTurn, resultLine, sectionPanel, toolCard, toolCards,
+  userBubble,
 } from './transcript.js';
 import { renderBeat, setBeat } from './heartbeat.js';
 import { renderMarkdown } from './markdown.js';
@@ -43,6 +44,15 @@ export function handle(ev) {
       // after it, so anything drawn on `result` lands in the middle.
       if (transcript.firstChild) add(el('div', 'divider turn'), false);
       add(userBubble(ev.text, ev.images, { at: ev.at }));
+      setBusy(true);
+      break;
+
+    case 'job':
+      // A turn the owner did not start. Same divider, deliberately NOT the
+      // same bubble — see jobBubble on why a job may not wear the owner's face.
+      closeLanes();
+      if (transcript.firstChild) add(el('div', 'divider turn'), false);
+      add(jobBubble(ev));
       setBusy(true);
       break;
 
