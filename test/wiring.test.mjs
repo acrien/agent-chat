@@ -108,10 +108,20 @@ guard('the heartbeat panel renders from a beat', () => {
            beat: { at: now - 5, state: 'working', quiet: 0, quiet_needed: 3, poll_seconds: 180,
                    watching: '8063 dirs (inotify)', roots: ['/x'], label: 'pulse check',
                    note: 'work is moving' },
-           recent: [{ at: now - 180, state: 'working', label: 'pulse check' }] });
+           recent: [{ at: now - 180, state: 'scheduled', label: 'revive check',
+                      note: 'restart in 30s — countdown started' }] });
   const panel = dump(document.getElementById('beatBody')).join('\n');
   assert.match(panel, /beatNow/, 'panel did not render');
-  assert.match(panel, /\[pulse check\]/, 'log line lost its job label');
+  assert.match(panel, /\[revive check\]/, 'log line lost its job label');
+  // THE OWNER, 2026-08-10: "I don't see anything in the stream log." The note
+  // was recorded, delivered to the page, and rendered as the single word
+  // `scheduled` — everything worked except the one line that draws it.
+  //
+  // ASSERTED ON THE LOG ROW'S OWN NOTE, not the current beat's. The first
+  // version of this checked for the live beat's text, which the panel renders
+  // in its headline — so it passed while the log line was still dropping the
+  // note. A test that cannot fail is a green light wired to nothing.
+  assert.match(panel, /restart in 30s/, 'the log line dropped what the job said');
 });
 
 /**

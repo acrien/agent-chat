@@ -88,6 +88,12 @@ export function renderBeat() {
     // fall back rather than rendering a blank bracket.
     line.append(el('span', 'src', `[${row.label ?? row.job ?? 'heartbeat'}]`));
     line.append(el('span', 's', row.state ?? '?'));
+    // WHAT IT ACTUALLY SAID. The state is one word chosen so a panel can colour
+    // it; the note is the sentence the job wrote. Rendering only the word meant
+    // "restart in 30s — countdown started" was recorded, delivered to the page,
+    // and shown as `scheduled` — THE OWNER, 2026-08-10: "I don't see anything
+    // in the stream log." It was all there; nothing drew it.
+    if (row.note) line.append(el('span', 'n', row.note));
     log.append(line);
   }
   body.append(log);

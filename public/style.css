@@ -525,6 +525,14 @@ body.resizing { cursor: col-resize; user-select: none; }
 .beatLog .row.working .s { color: #6fbf73; }
 .beatLog .row.quiet .s { color: var(--accent); }
 .beatLog .row.stalled .s { color: var(--err); }
+/* THE SENTENCE THE JOB WROTE. It wraps rather than truncating: the useful part
+   of "pid 562830 → 564941" is at the END, and an ellipsis would cut off the
+   half that proves a restart happened. Dim, because the eye is scanning
+   timestamps and states — the note is what you read once you have stopped. */
+.beatLog .row { align-items: baseline; }
+.beatLog .row .n { color: var(--dim); overflow-wrap: anywhere; }
+.beatLog .row.scheduled .s,
+.beatLog .row.alarm .s { color: var(--role-code); }
 
 .beatShow {
   position: fixed;
