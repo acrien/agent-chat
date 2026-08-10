@@ -230,6 +230,30 @@ await (async () => {
   } catch (err) { fails.push(name); console.log(`  FAIL  ${name}\n        ${err.message}`); }
 })();
 
+/**
+ * THE RENDERER DROPS NOTHING, which is the guarantee that lets a future job be
+ * added without touching the page. THE OWNER, 2026-08-10: "there should be a
+ * stream, all emitters dump into there, renderer renders all in there, so in
+ * the future we add more messages/jobs, we don't need to worry about rendering
+ * vs etc."
+ *
+ * The field below is deliberately one nothing has ever emitted. A renderer that
+ * names the fields it draws passes every test written against today's fields
+ * and silently loses tomorrow's.
+ */
+guard('a field no emitter has ever sent still reaches the log', () => {
+  handle({ t: 'heartbeat', attached: true, beating: true,
+           beat: { at: now - 1, state: 'working', note: 'x' },
+           recent: [{ at: now - 5, state: 'alarm', label: 'some future job',
+                      note: 'it said a thing',
+                      somethingNobodyHasBuiltYet: 'visible',
+                      detail: { pid: 4177 } }] });
+  const panel = dump(document.getElementById('beatBody')).join('\n');
+  assert.match(panel, /it said a thing/, 'the sentence was dropped');
+  assert.match(panel, /somethingNobodyHasBuiltYet=visible/, 'an unknown field was dropped');
+  assert.match(panel, /pid=4177/, 'a structured detail was dropped');
+});
+
 // The summary is LAST, and stays last. It was in the middle once: two cases
 // appended after it never ran, and the file reported `all wired` for them.
 console.log(fails.length ? `\n${fails.length} failed` : '\nall wired');

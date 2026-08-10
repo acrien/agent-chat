@@ -31,6 +31,66 @@ export function ago(seconds) {
 /** As many beats as fit a glance; the record keeps the rest. */
 const BEAT_ROWS = 40;
 
+/**
+ * THE FIELDS THIS ROW HAS A SHAPE FOR. Everything else in an entry is rendered
+ * generically rather than dropped — see `streamRow`.
+ *
+ * The operational fields are here not because they are uninteresting but
+ * because they already have a home in the facts list above, and repeating
+ * `watching=8067 dirs` on all forty rows would bury the sentences.
+ */
+const ROW_SHAPED = new Set([
+  'at', 'state', 'label', 'job', 'note', 'detail',
+  'changed', 'quiet', 'quiet_needed', 'poll_seconds', 'watching', 'roots',
+  'turn', 'key', 'pid', 'cwd',
+]);
+
+/**
+ * ONE STREAM, ONE RENDERER, AND THE RENDERER DROPS NOTHING.
+ *
+ * THE OWNER, 2026-08-10: "there should be a stream, all emitters dump into
+ * there, renderer renders all in there, so in the future we add more
+ * messages/jobs, we don't need to worry about rendering vs etc."
+ *
+ * WHAT THIS FIXES IS A CLASS, NOT A FIELD. The previous version named the
+ * three fields it drew — time, source, state — so `note` was dropped, and the
+ * failure was silent: `restart in 30s — countdown started` displayed as the
+ * single word `scheduled`, and every layer beneath was working perfectly. That
+ * is not a bug about notes. Any field a future job adds would vanish the same
+ * way, and nothing anywhere would report it, because a renderer that ignores a
+ * field looks exactly like an emitter that never sent one.
+ *
+ * So the shape is inverted. The row draws what it has a shape for, and then
+ * draws EVERYTHING ELSE as key=value. A new job emitting `{pid: 4177}` shows
+ * up with no change here. The list above is not a filter on what may be shown
+ * — it is a list of what already has a better place to be shown.
+ *
+ * `detail` is the structured half: an emitter with more to say than a sentence
+ * puts it there, and it renders as pairs rather than as JSON nobody reads.
+ */
+export function streamRow(row) {
+  const line = el('div', `row ${row.state ?? ''}`);
+  line.append(el('span', 't', tick(row.at)));
+  // WHICH JOB SAID IT. Beats written before jobs existed carry no label and
+  // fall back rather than rendering a blank bracket.
+  line.append(el('span', 'src', `[${row.label ?? row.job ?? 'heartbeat'}]`));
+  line.append(el('span', 's', row.state ?? '?'));
+  // WHAT IT ACTUALLY SAID. The state is one word chosen so a panel can colour
+  // it; the note is the sentence the job wrote.
+  if (row.note) line.append(el('span', 'n', row.note));
+
+  const extra = [];
+  for (const [key, value] of Object.entries(row.detail ?? {})) extra.push([key, value]);
+  for (const [key, value] of Object.entries(row)) {
+    if (!ROW_SHAPED.has(key) && value != null && value !== '') extra.push([key, value]);
+  }
+  for (const [key, value] of extra) {
+    const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
+    line.append(el('span', 'x', `${key}=${text.length > 80 ? `${text.slice(0, 80)}…` : text}`));
+  }
+  return line;
+}
+
 export function secondsSince(at) {
   return at ? Date.now() / 1000 - at : 0;
 }
@@ -81,21 +141,7 @@ export function renderBeat() {
   const recent = (beatState.recent ?? []).slice(-BEAT_ROWS).reverse();
   if (!recent.length) return;
   const log = el('div', 'beatLog');
-  for (const row of recent) {
-    const line = el('div', `row ${row.state ?? ''}`);
-    line.append(el('span', 't', tick(row.at)));
-    // WHICH JOB SAID IT. Beats written before jobs existed carry no label and
-    // fall back rather than rendering a blank bracket.
-    line.append(el('span', 'src', `[${row.label ?? row.job ?? 'heartbeat'}]`));
-    line.append(el('span', 's', row.state ?? '?'));
-    // WHAT IT ACTUALLY SAID. The state is one word chosen so a panel can colour
-    // it; the note is the sentence the job wrote. Rendering only the word meant
-    // "restart in 30s — countdown started" was recorded, delivered to the page,
-    // and shown as `scheduled` — THE OWNER, 2026-08-10: "I don't see anything
-    // in the stream log." It was all there; nothing drew it.
-    if (row.note) line.append(el('span', 'n', row.note));
-    log.append(line);
-  }
+  for (const row of recent) log.append(streamRow(row));
   body.append(log);
 }
 

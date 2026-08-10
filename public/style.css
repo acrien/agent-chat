@@ -531,6 +531,16 @@ body.resizing { cursor: col-resize; user-select: none; }
    timestamps and states — the note is what you read once you have stopped. */
 .beatLog .row { align-items: baseline; }
 .beatLog .row .n { color: var(--dim); overflow-wrap: anywhere; }
+/* ANYTHING A FUTURE EMITTER ADDS. Rendered as key=value in the code hue, so it
+   reads as data rather than as prose — and so an unexpected field looks
+   unexpected, which is the point of showing it at all. */
+.beatLog .row .x {
+  color: var(--role-code);
+  font-family: var(--mono);
+  font-size: .92em;
+  overflow-wrap: anywhere;
+}
+.beatLog .row { flex-wrap: wrap; }
 .beatLog .row.scheduled .s,
 .beatLog .row.alarm .s { color: var(--role-code); }
 
