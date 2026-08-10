@@ -39,6 +39,9 @@ import { fileURLToPath } from 'node:url';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
 import * as store from './state.mjs';
+// The model menu and the spawn path read ONE routing verdict — see routing.mjs
+// for why two separate checks was the dropdown that selected nothing.
+import { gatewayModels, providerFor } from './routing.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(HERE, 'public');
@@ -157,39 +160,8 @@ const BEAT_SWEEP_MS = 20_000;    // cheap enough to ignore, often enough to noti
  * that has never heard of it would send a parameter the gateway rejects, and
  * the failure would arrive as a dead turn rather than as a bad menu.
  */
-const LLM_CONFIG = process.env.RAINSMOKE_LLM_CONFIG
-  || path.join(os.homedir(), 'projects', 'rayxiv4', 'config', 'llm_config.json');
-
-function gatewayModels() {
-  // THE GOLDEN RECORD IS THE LIST; the provider config is only consulted for
-  // whether a model can currently be REACHED. Deriving the menu from the
-  // credentials file would mean a model disappearing the moment a key was
-  // rotated out — which is the disappearance being prevented, arriving by a
-  // different door.
-  let golden;
-  try {
-    golden = JSON.parse(fs.readFileSync(path.join(HERE, 'models.golden.json'), 'utf8'));
-  } catch {
-    return [];
-  }
-  let providers = {};
-  try {
-    providers = JSON.parse(fs.readFileSync(LLM_CONFIG, 'utf8')).providers ?? {};
-  } catch { /* no credentials here: still list them, marked unreachable */ }
-
-  return (golden.models ?? []).filter((m) => !m.retired).map((m) => {
-    const prov = providers[m.provider] ?? {};
-    const reachable = Boolean(prov.base_url && prov.api_key);
-    const levels = Array.isArray(m.supportedEffortLevels) ? m.supportedEffortLevels : [];
-    return {
-      value: m.value,
-      displayName: reachable ? m.displayName : `${m.displayName}  (no key)`,
-      description: m.description ?? '',
-      supportsEffort: levels.length > 0,
-      supportedEffortLevels: levels,
-    };
-  });
-}
+// The gateway half of the model menu, and the routing verdict behind it, live
+// in routing.mjs — imported above, where the imports belong.
 
 /** execFile as a promise: the sweep must never block the event loop. */
 function run(bin, args, timeout = 10_000) {
@@ -431,6 +403,10 @@ class UserSession {
     //: This session owes a handoff to a restart that is waiting for it. The
     //: restart fires when nothing owes one — see `maybeRestart`.
     this.restartPending = false;
+    //: A model switch that changes the provider, chosen while a turn was
+    //: running. Applied by `send()` before the next turn, never mid-turn —
+    //: swapping the query underneath a running turn would kill the turn.
+    this.pendingModelSwap = false;
     this.start();
     this.watchHeartbeat();
   }
@@ -653,7 +629,17 @@ class UserSession {
       includePartialMessages: true,
     };
     if (this.model) options.model = this.model;
-    if (this.effort) options.effort = this.effort;
+    // THE ROUTING. A gateway model carries its provider's environment — base
+    // url and token — without which its name would go to Anthropic, which does
+    // not know it, and the turn would die looking like a model failure. A
+    // first-party model (or none) leaves the env to the session's own OAuth.
+    const routed = providerFor(this.model);
+    if (routed?.env) options.env = routed.env;
+    // AN EFFORT THE MODEL CANNOT TAKE IS NOT SENT. qwen3.8-max declares no
+    // effort levels; passing one would send a parameter the gateway rejects,
+    // and the failure would arrive as a dead turn rather than as a bad menu.
+    const takesEffort = !(routed?.model) || Boolean(routed.model.supportedEffortLevels?.length);
+    if (this.effort && takesEffort) options.effort = this.effort;
 
     // The only honest source for the EFFECTIVE effort. `supportedModels()`
     // lists which levels a model allows but not which one is in force, and
@@ -925,6 +911,14 @@ class UserSession {
   }
 
   send(text, images) {
+    // A provider switch chosen mid-turn lands here. Only BETWEEN turns — the
+    // `busy` guard is what keeps a running turn alive and keeps nothing pushed
+    // into an input that is about to be closed. If this send is itself mid-
+    // turn, the swap simply waits for the next one.
+    if (this.pendingModelSwap && !this.busy) {
+      this.swapQuery(`model → ${this.model || 'default'}`);
+    }
+
     const stored = images.map((img) => ({
       id: saveImage(this.userId, img.mediaType, img.data),
       mediaType: img.mediaType,
@@ -1181,6 +1175,56 @@ class UserSession {
       parent_tool_use_id: null,
     });
     this.busy = true;
+  }
+
+  /**
+   * Change the model, routing it rather than merely naming it.
+   *
+   * THE DISTINCTION THIS EXISTS FOR. `setModel` alone was the dropdown that
+   * selected nothing: a gateway model's name arrived at Anthropic, which does
+   * not know it, because the SDK process had no gateway environment — env is
+   * fixed when `query()` spawns, so it can only change with the query.
+   *
+   * Within one provider the name is enough — `setModel` on the live query.
+   * Across providers the query itself is replaced, and the conversation
+   * follows by its session id. That is the seamless part: opus to qwen3.8-max
+   * and back keeps the thread, because a change of provider is not a change of
+   * place — unlike cwd, which genuinely cannot carry the context.
+   */
+  async setModelRouted(want) {
+    const from = providerFor(this.model)?.model?.provider ?? null;
+    const to = providerFor(want)?.model?.provider ?? null;
+    if (from === to) {
+      await this.q.setModel(want || undefined);
+      this.model = want || null;
+      writeState(this.userId, { model: this.model });
+      this.broadcast({ t: 'notice', text: `model → ${want || 'default'}` });
+      return;
+    }
+    this.model = want || null;
+    writeState(this.userId, { model: this.model });
+    if (this.busy) {
+      // Mid-turn: the swap waits for the next `send()`. Announced, not silent
+      // — the selector already shows the new name, but the turn still running
+      // is on the old provider, and the page should say so.
+      this.pendingModelSwap = true;
+      this.broadcast({ t: 'notice', text: `model → ${want || 'default'} after this turn` });
+      return;
+    }
+    this.swapQuery(`model → ${want || 'default'}`);
+  }
+
+  /**
+   * A new query() with the conversation kept. The session id is NOT nulled —
+   * `start()` resumes on it, which is what makes a provider switch seamless.
+   * (setCwd nulls it for the opposite reason: a new project is a new context.)
+   */
+  swapQuery(noticeText) {
+    try { this.q?.close?.(); } catch { /* already gone */ }
+    this.input?.close();
+    this.pendingModelSwap = false;
+    this.start();
+    this.broadcast({ t: 'notice', text: noticeText });
   }
 
   /** Changing cwd means a new query(); it is fixed for a session's lifetime. */
@@ -1609,15 +1653,19 @@ const server = http.createServer(async (req, res) => {
 
     if (url === '/api/model' && req.method === 'POST') {
       const { model } = await readBody(req);
-      await session.q.setModel(model || undefined);
-      session.model = model || null;
-      writeState(userId, { model: session.model });
-      session.broadcast({ t: 'notice', text: `model → ${model || 'default'}` });
+      await session.setModelRouted(model || null);
       return json(res, 200, { ok: true });
     }
 
     if (url === '/api/effort' && req.method === 'POST') {
       const { effort } = await readBody(req);
+      // The page only offers levels the model names, but the server does not
+      // take the page's word for it: an effort a model cannot take would send
+      // a parameter the gateway rejects, arriving as a dead turn.
+      const routedNow = providerFor(session.model);
+      if (effort && routedNow?.model && !routedNow.model.supportedEffortLevels?.length) {
+        return json(res, 400, { error: `${session.model} has no effort levels` });
+      }
       // Session-scoped: applyFlagSettings is streaming-input-mode only, which
       // is why each user keeps one long-lived query rather than one per turn.
       await session.q.applyFlagSettings({ effortLevel: effort || null });
