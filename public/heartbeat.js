@@ -1,0 +1,129 @@
+/**
+ * heartbeat.js — what the out-of-band poller is doing, beside the transcript.
+ */
+import { el, els } from './dom.js';
+
+// --- heartbeat panel -------------------------------------------------------
+
+/**
+ * What the heartbeat is doing, beside the transcript rather than inside it.
+ *
+ * Fed by `t: 'heartbeat'`, which the server sends when the state CHANGES — not
+ * on a timer. The one thing that ticks here is the age of the last beat, and it
+ * ticks locally: the page has the timestamp and a clock, so counting seconds
+ * costs nothing and needs no traffic.
+ */
+let beatState = null;
+
+/** `HH:MM:SS` — beats land minutes apart, so minutes alone would collide. */
+export function tick(at) {
+  return new Date(at * 1000).toLocaleTimeString([], {
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+}
+
+export function ago(seconds) {
+  if (seconds < 90) return `${Math.max(0, Math.round(seconds))}s ago`;
+  if (seconds < 5400) return `${Math.round(seconds / 60)} min ago`;
+  return `${(seconds / 3600).toFixed(1)} h ago`;
+}
+
+/** As many beats as fit a glance; the record keeps the rest. */
+const BEAT_ROWS = 40;
+
+export function secondsSince(at) {
+  return at ? Date.now() / 1000 - at : 0;
+}
+
+export function renderBeat() {
+  const body = els.beatBody;
+  body.textContent = '';
+
+  if (!beatState?.attached) {
+    els.beatPulse.className = 'pulse stopped';
+    body.append(el('div', 'beatNow', 'not running'));
+    body.append(el('div', 'beatNote', 'nothing has beaten for this directory yet.'));
+    const how = el('pre');
+    how.append(el('code', null, 'python3 ops/heartbeat.py <cwd>'));
+    body.append(how);
+    return;
+  }
+
+  const beat = beatState.beat ?? {};
+  // A beat that stopped arriving outranks whatever the last one said it was
+  // doing: "working" from four minutes ago is not what the panel is for.
+  const state = beatState.beating ? (beat.state ?? 'quiet') : 'stopped';
+  els.beatPulse.className = `pulse ${state}`;
+
+  const now = el('div', 'beatNow');
+  now.append(el('span', 'state', state));
+  now.append(document.createTextNode(' · '));
+  now.append(el('span', 'age', ago(secondsSince(beat.at))));
+  body.append(now);
+
+  body.append(el('div', 'beatNote', state === 'stopped'
+    ? 'the beats stopped — the poller is not running, or it hung.'
+    : (beat.note ?? '')));
+
+  const facts = el('dl', 'beatFacts');
+  const fact = (term, value) => {
+    facts.append(el('dt', null, term));
+    facts.append(el('dd', null, value));
+  };
+  if (beat.poll_seconds) fact('polls', `every ${beat.poll_seconds}s`);
+  if (beat.quiet != null) fact('quiet', `${beat.quiet} of ${beat.quiet_needed ?? '?'} polls`);
+  // The unit comes with the value: appending " files" here made the label read
+  // "8063 dirs (inotify) files" the moment the poller counted something else.
+  if (beat.watching != null) fact('watching', String(beat.watching));
+  for (const root of beat.roots ?? []) fact('root', root);
+  body.append(facts);
+
+  const recent = (beatState.recent ?? []).slice(-BEAT_ROWS).reverse();
+  if (!recent.length) return;
+  const log = el('div', 'beatLog');
+  for (const row of recent) {
+    const line = el('div', `row ${row.state ?? ''}`);
+    line.append(el('span', 't', tick(row.at)));
+    // WHICH JOB SAID IT. Beats written before jobs existed carry no label and
+    // fall back rather than rendering a blank bracket.
+    line.append(el('span', 'src', `[${row.label ?? row.job ?? 'heartbeat'}]`));
+    line.append(el('span', 's', row.state ?? '?'));
+    log.append(line);
+  }
+  body.append(log);
+}
+
+/**
+ * Re-say the age once a second, and nothing else. Redrawing the whole panel on
+ * a timer would fight the log's scroll position and rebuild a list nobody asked
+ * to change — only the field that is a function of the clock is updated, plus
+ * the pulse, on the one transition a clock can cause: beats going silent.
+ */
+setInterval(() => {
+  if (!beatState?.attached || !beatState.beat) return;
+  const seconds = secondsSince(beatState.beat.at);
+  const every = beatState.beat.poll_seconds ?? 0;
+  const beating = every > 0 ? seconds <= every * 3 : false;
+  if (beating !== beatState.beating) {
+    beatState = { ...beatState, beating };
+    renderBeat();
+    return;
+  }
+  const age = els.beatBody.querySelector('.age');
+  if (age) age.textContent = ago(seconds);
+}, 1000);
+
+
+
+/**
+ * Hand the panel a new reading.
+ *
+ * `events.js` assigned `beatState` directly when both lived in one file. A
+ * module whose state is written from outside cannot promise anything about it
+ * — including that a render follows a change, which is the one thing this
+ * module exists to guarantee.
+ */
+export function setBeat(next) {
+  beatState = next;
+  renderBeat();
+}
