@@ -92,6 +92,21 @@ guard('the jobs page draws both layers', () => {
   assert.match(dump(page).join('\n'), /iCircle/, 'config page missing its (i)');
 });
 
+guard('a finished run rings the chime', () => {
+  let rang = 0;
+  const real = globalThis.AudioContext;
+  globalThis.AudioContext = function () {
+    rang += 1;
+    return { state: 'running', currentTime: 0, close() {},
+             createOscillator: () => ({ type: '', frequency: {}, connect: (n) => n, start() {}, stop() {} }),
+             createGain: () => ({ gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} },
+                                  connect: (n) => n }) };
+  };
+  handle({ t: 'result', subtype: 'success', turns: 1, durationMs: 900 });
+  globalThis.AudioContext = real;
+  assert.equal(rang, 1, 'the run ended and nothing rang');
+});
+
 guard('the splitter is wired to the grip', () => {
   const grip = document.getElementById('grip');
   const wanted = ['pointerdown', 'pointermove', 'pointerup', 'dblclick'];

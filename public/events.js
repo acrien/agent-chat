@@ -2,6 +2,7 @@
  * events.js — one SSE event in, one change to the page out.
  */
 import { add, atBottom, el, els, notice, setBusy, transcript } from './dom.js';
+import { chime } from './chime.js';
 import {
   blockAt, closeLanes, laneContainer, blockElement, makeBlock, renderHistory,
   rememberTurn, resultLine, sectionPanel, toolCard, toolCards, userBubble,
@@ -94,6 +95,8 @@ export function handle(ev) {
     case 'result':
       setBusy(false);
       closeLanes();
+      // The run has ended — not the last delta. See chime.js.
+      chime();
       add(resultLine(ev));
       if (ev.isError && ev.text) add(el('div', 'result error', ev.text));
       break;
