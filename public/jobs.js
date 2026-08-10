@@ -59,8 +59,51 @@ export function drawJobList(report) {
       info.classList[does.hidden ? 'remove' : 'add']('open');
     });
     row.append(does);
+    row.append(scheduleLine(job));
     body.append(row);
   }
+}
+
+/**
+ * What the scheduler is about to do, and the one chance to stop it.
+ *
+ * THE COUNTDOWN IS THE SERVER'S, NOT THIS PAGE'S. A timer started here on
+ * click would keep counting through a reload that lost it, and would keep
+ * counting after the poller had already started the round — counting down to
+ * something it has no way to confirm happened. So this only draws what
+ * arrives, and re-asks while the number is still moving.
+ *
+ * CANCEL IS THE SWITCH. There is exactly one way to stop a round that has not
+ * started, and inventing a second control that also stops it would mean two
+ * mechanisms for one act — with the usual consequence that one of them ends up
+ * being the one that does not quite work.
+ */
+function scheduleLine(job) {
+  const s = job.schedule ?? {};
+  const line = el('div', 'jobWhen');
+  if (s.arming) {
+    line.classList.add('arming');
+    line.append(el('span', 'countdown', `starting in ${s.starts_in}s`));
+    const stop = el('button', 'pill cancel', 'cancel');
+    stop.type = 'button';
+    stop.addEventListener('click', async () => {
+      const res = await post('/api/jobs', { job: job.name, on: false });
+      if (res.ok) drawJobList(await res.json());
+    });
+    line.append(stop);
+    // Only while a countdown is live: a page that re-asked forever would poll
+    // the server for a number that changes once every ten hours.
+    setTimeout(async () => {
+      const res = await post('/api/jobs', {});
+      if (res.ok) drawJobList(await res.json());
+    }, 1000);
+  } else if (s.running) {
+    line.append(el('span', 'runState', 'running'));
+    if (s.queued) line.append(el('span', 'runState queued', '1 queued'));
+  } else if (job.enabled) {
+    line.append(el('span', 'runState idle', s.why || 'waiting'));
+  }
+  return line;
 }
 
 export function drawJobConfig(report, name) {

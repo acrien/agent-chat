@@ -808,6 +808,20 @@ footer {
 .jobRow.off { border-left-color: var(--line); }
 .jobRow.off .name { color: var(--dim); }
 
+/* WHAT THE SCHEDULER IS ABOUT TO DO. Quiet by default — "waiting" is the
+   normal state and does not deserve contrast — and loud only while a round is
+   about to start, which is the one moment the owner can still stop it. */
+.jobWhen { display: flex; align-items: center; gap: 8px; margin-top: 5px; }
+.jobWhen .runState { color: var(--dim); font-size: .86em; }
+.jobWhen .runState.queued { color: var(--role-code); }
+.jobWhen.arming .countdown {
+  color: var(--role-good);
+  font-size: .86em;
+  font-variant-numeric: tabular-nums;   /* 10 → 9 must not shift the button */
+}
+.pill.cancel { border-color: var(--err); color: var(--err); }
+.pill.cancel:hover { border-color: var(--err); background: #2a1c1a; }
+
 .jobRowHead { display: flex; align-items: center; gap: 8px; }
 .jobRowHead .name { color: var(--fg-strong); font-weight: 600; margin-right: auto; }
 

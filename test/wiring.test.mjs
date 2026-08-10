@@ -114,8 +114,34 @@ guard('the heartbeat panel renders from a beat', () => {
   assert.match(panel, /\[pulse check\]/, 'log line lost its job label');
 });
 
+/**
+ * A COUNTDOWN THE OWNER CAN ACT ON. Ten seconds is the whole window between
+ * switching a job on and it spending tokens; if the page shows the number but
+ * not the way out, the window is decorative.
+ */
+guard('an arming job shows its countdown and a way to stop it', () => {
+  drawJobList({ jobs: [{ name: 'miss_review', label: 'miss review', does: 'Reads.',
+    enabled: true, arms: true, tunables: [],
+    schedule: { arming: true, starts_in: 7, running: false, queued: false,
+                next_action: 'wait', why: 'starting in 7s' } }] });
+  const page = dump(document.getElementById('settingsBody')).join('\n');
+  assert.match(page, /starting in 7s/, 'no countdown drawn');
+  assert.match(page, /button\.pill\.cancel/, 'a countdown with no way to stop it');
+});
+
+guard('a running job says so, and says one is queued behind it', () => {
+  drawJobList({ jobs: [{ name: 'miss_review', label: 'miss review', does: 'Reads.',
+    enabled: true, arms: true, tunables: [],
+    schedule: { arming: false, starts_in: 0, running: true, queued: true,
+                next_action: 'wait', why: 'a round is still running' } }] });
+  const page = dump(document.getElementById('settingsBody')).join('\n');
+  assert.match(page, /running/, 'a running round is invisible');
+  assert.match(page, /1 queued/, 'a queued round is invisible');
+});
+
 guard('the jobs page draws both layers', () => {
   const jobs = { jobs: [{ name: 'pulse', label: 'pulse check', does: 'Polls.', enabled: true,
+    schedule: { arming: false, running: false, queued: false, why: 'not due' },
     tunables: [{ name: 'heartbeat_seconds', value: 180, default: 180, low: 30, high: 3600,
                  unit: 'seconds', means: 'How often.', owner_set: true }] }] };
   const page = document.getElementById('settingsBody');
