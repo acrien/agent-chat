@@ -1,0 +1,61 @@
+# The chat server, supervised — so "it did not come back" mostly stops existing.
+#
+# WHY THIS IS THE UPSTREAM FIX. rainsmoke3's revive job watches for a restarted
+# process to return and starts a session to investigate when it does not. That
+# is an interceptor, and it exists because the thing doing the restarting is
+# the thing being restarted — the agent cannot check on its own successor.
+#
+# But the reason nobody could check is that nothing was supervising. Started by
+# hand, the server has no parent: it dies and stays dead, and the only observer
+# is a human opening a browser. Under systemd it is restarted by something that
+# was never in the blast radius, which makes the state revive watches for —
+# "restarted, and nothing came back" — nearly unrepresentable rather than
+# merely detected.
+#
+# REVIVE IS NOT MADE REDUNDANT, and the remaining case is the interesting one:
+# a server that starts, crashes, starts, crashes. StartLimit below gives up
+# after five attempts in two minutes, and THAT is the state worth a session —
+# a crash loop is a real defect, where a single failed start is usually a port
+# still closing.
+#
+# INSTALL, WITHOUT DISTURBING WHAT IS RUNNING:
+#
+#   install -m600 /dev/null ~/.config/agent-chat.env
+#   printf 'AGENT_CHAT_TOKEN=%s\n' "$(the token from the running argv)" \
+#       > ~/.config/agent-chat.env
+#   mkdir -p ~/.config/systemd/user
+#   cp ops/agent-chat.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable agent-chat
+#
+# Adopting it means one restart — the port cannot be held twice — so the switch
+# is: stop the hand-started process, then `systemctl --user start agent-chat`.
+#
+# THE TOKEN LIVES IN AN ENV FILE, not here, because a unit file is ordinary
+# config that gets copied into a repository without thinking. Without --token
+# the server mints a random one on every start, which silently invalidates the
+# link in the owner's browser — the page looks identical and simply stops
+# authorising.
+
+[Unit]
+Description=agent-chat — a local chat page wired to the Claude Agent SDK
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/agent-chat
+EnvironmentFile=%h/.config/agent-chat.env
+ExecStart=/home/aeli/.nvm/versions/node/v24.15.0/bin/node server.mjs \
+    --port 8787 --host 0.0.0.0 \
+    --cwd %h/projects/rainsmoke3 \
+    --token ${AGENT_CHAT_TOKEN}
+Restart=always
+RestartSec=2
+# Five failures in two minutes is a crash loop, not a slow port. Past this
+# systemd stops trying and the unit sits `failed` — visible, and the one state
+# where starting a session to investigate is worth what it costs.
+StartLimitBurst=5
+StartLimitIntervalSec=120
+
+[Install]
+WantedBy=default.target
