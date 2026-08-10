@@ -770,15 +770,35 @@ function fromLegacyRm3(item) {
   };
 }
 
-/** How many tokens a turn actually spent, in the units a reader can hold. */
+/**
+ * What a turn spent, in three numbers that mean three different things.
+ *
+ * THE OWNER, 2026-08-09: "there's 12 mil token input in that one prompt?"
+ *
+ * There was, and it was cache reads. Measured on a 14-turn run: 26 fresh input
+ * tokens, 15k written to cache, and 12,839,496 read back from it — the same
+ * context re-read on every internal call. Adding those together produced a
+ * headline of "12.8M in", which is arithmetically true and says nothing a
+ * reader wants: it reports how many times a large context was re-sent, not how
+ * much was said. They are kept apart because they are paid for at different
+ * rates and caused by different things — output is what the model produced,
+ * input is what was newly given to it, and cache is the cost of the
+ * conversation being long.
+ */
 function tokens(usage) {
   if (!usage) return null;
-  const inTok = (usage.input_tokens ?? 0)
-    + (usage.cache_read_input_tokens ?? 0)
-    + (usage.cache_creation_input_tokens ?? 0);
-  const outTok = usage.output_tokens ?? 0;
-  const brief = (n) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n));
-  return `${brief(inTok)} in · ${brief(outTok)} out`;
+  const brief = (n) => {
+    if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+    if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k`;
+    return String(n);
+  };
+  const cached = (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+  const parts = [
+    `${brief(usage.input_tokens ?? 0)} in`,
+    `${brief(usage.output_tokens ?? 0)} out`,
+  ];
+  if (cached) parts.push(`${brief(cached)} cached`);
+  return `tokens: ${parts.join(' · ')}`;
 }
 
 function resultLine(ev) {
