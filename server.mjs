@@ -521,9 +521,31 @@ class UserSession {
     // round had started. So a delivery that throws puts the batch back.
     try {
       this.busy = true;
+
+      // A JOB TURN STARTS FROM NOTHING, EVERY TIME.
+      //
+      // THE OWNER, 2026-08-10: "when you run anything on pod, make sure to
+      // clear it so it starts new; otherwise it'll be polluted with other
+      // contexts."
+      //
+      // Measured the same day: a handoff-test session in the pod inherited the
+      // previous rounds AND the synced copy of production's record, and spent
+      // its turn diagnosing a conversation that was not its own. A review is
+      // handed everything it needs in its prompt — the batch, the brief, the
+      // environment — so anything else in its context is another round's
+      // reasoning leaking into this one's conclusions.
+      //
+      // This is `/clear` without the handoff, which is the right shape: there
+      // is nothing to carry forward between independent readings.
+      try { this.q?.close?.(); } catch { /* already gone */ }
+      this.input?.close();
+      this.sdkSessionId = null;
+      writeState(this.userId, { sessionId: null });
+      this.start({ fresh: true });
+
       const at = Date.now();
       const event = { t: 'job', name: offer.job, label: offer.label,
-                      headline: offer.headline, at };
+                      headline: `${offer.headline} · fresh session`, at };
       this.emit(event, { k: 'job', ...event, t: undefined });
       this.input.push({
         type: 'user',
