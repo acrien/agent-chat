@@ -541,6 +541,25 @@ body.resizing { cursor: col-resize; user-select: none; }
   overflow-wrap: anywhere;
 }
 .beatLog .row { flex-wrap: wrap; }
+/* THE POD'S OWN SECTION. A different hue for the whole block, because the
+   question a reader asks first is "which machine" — and answering it with a
+   per-row label means reading before knowing. The rail says it once. */
+.podLog {
+  border-top: 1px solid var(--role-link);
+  border-left: 2px solid var(--role-link);
+  padding-left: 7px;
+  margin-top: 8px;
+}
+.podLog .podHead {
+  color: var(--role-link);
+  font: var(--fs-label)/1.4 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  padding: 2px 0 3px;
+}
+.podLog .row .src { color: var(--role-link); }
+.podLog .row .n { color: #8aa9a5; }
+
 .beatLog .row.scheduled .s,
 .beatLog .row.alarm .s { color: var(--role-code); }
 

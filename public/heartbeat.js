@@ -140,9 +140,24 @@ export function renderBeat() {
 
   const recent = (beatState.recent ?? []).slice(-BEAT_ROWS).reverse();
   if (!recent.length) return;
-  const log = el('div', 'beatLog');
-  for (const row of recent) log.append(streamRow(row));
-  body.append(log);
+  // TWO SECTIONS, BECAUSE THEY ARE TWO MACHINES. Interleaving them by time
+  // would read as one stream, and the owner would have to check every row's
+  // label to know which box it happened on — a provenance you have to look up
+  // is a provenance the eye gets wrong. The pod's rows are contained the same
+  // way the pod's mistakes are.
+  const here = recent.filter((r) => !r.pod);
+  const pod = recent.filter((r) => r.pod);
+  if (here.length) {
+    const log = el('div', 'beatLog');
+    for (const row of here) log.append(streamRow(row));
+    body.append(log);
+  }
+  if (pod.length) {
+    const podLog = el('div', 'beatLog podLog');
+    podLog.append(el('div', 'podHead', 'lab pod — aelimain'));
+    for (const row of pod) podLog.append(streamRow(row));
+    body.append(podLog);
+  }
 }
 
 /**

@@ -254,6 +254,24 @@ guard('a field no emitter has ever sent still reaches the log', () => {
   assert.match(panel, /pid=4177/, 'a structured detail was dropped');
 });
 
+/**
+ * A POD ROW IS NOT A LOCAL ROW. Interleaving the two streams by time would
+ * read as one machine, and a provenance you have to look up per row is a
+ * provenance the eye gets wrong — the same failure as a heading taking the
+ * enforcement layer's colour from its wording.
+ */
+guard('the pod stream gets its own section', () => {
+  handle({ t: 'heartbeat', attached: true, beating: true,
+           beat: { at: now - 1, state: 'working', note: 'local' },
+           recent: [{ at: now - 9, state: 'working', label: 'pulse check', note: 'here' },
+                    { at: now - 4, state: 'scheduled', label: 'pod/miss review',
+                      note: 'countdown started', pod: true }] });
+  const panel = dump(document.getElementById('beatBody')).join('\n');
+  assert.match(panel, /div\.beatLog\.podLog/, 'pod rows were not put in their own section');
+  assert.match(panel, /lab pod/, 'the section does not say which machine');
+  assert.match(panel, /countdown started/, 'the pod row lost its sentence');
+});
+
 // The summary is LAST, and stays last. It was in the middle once: two cases
 // appended after it never ran, and the file reported `all wired` for them.
 console.log(fails.length ? `\n${fails.length} failed` : '\nall wired');
