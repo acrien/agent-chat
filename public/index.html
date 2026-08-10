@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent-chat</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<div id="gate" class="gate" hidden>
+  <form class="card" id="loginForm">
+    <h1>agent-chat</h1>
+    <p>Everything is per user — history, images, model, effort, and working directory.</p>
+    <input id="loginName" placeholder="your name" autocomplete="username" spellcheck="false">
+    <div class="known" id="knownUsers"></div>
+    <button type="submit">continue</button>
+    <p class="warn">Runs with permissions bypassed: every tool call executes unprompted.</p>
+  </form>
+</div>
+
+<header>
+  <div class="brand">
+    <span class="dot" id="dot"></span>
+    <strong>agent-chat</strong>
+    <button class="linky" id="user" type="button" title="sign out"></button>
+    <button class="linky meta" id="cwd" type="button" title="change working directory"></button>
+  </div>
+
+  <div class="controls">
+    <label>model
+      <select id="model"><option value="">loading…</option></select>
+    </label>
+    <label>effort
+      <select id="effort"><option value="">default</option></select>
+    </label>
+  </div>
+</header>
+
+<div id="settings" class="gate" hidden>
+  <div class="card">
+    <h1 id="settingsTitle">jobs</h1>
+    <p id="settingsLead">What the heartbeat does.</p>
+    <div id="settingsBody" class="tunables"></div>
+    <button type="button" id="settingsClose">done</button>
+  </div>
+</div>
+
+<div class="split">
+  <main id="transcript"></main>
+
+  <div class="grip" id="grip" role="separator" aria-orientation="vertical"
+       title="drag to resize · double-click to reset"></div>
+
+  <aside id="beat" class="beat">
+    <div class="beatHead">
+      <span class="pulse" id="beatPulse"></span>
+      <strong>heartbeat</strong>
+      <button class="linky" id="beatHide" type="button" title="hide the panel">hide</button>
+    </div>
+    <div class="beatTools">
+      <button id="interrupt" type="button" disabled>stop</button>
+      <button class="linky" id="settingsOpen" type="button" title="what the heartbeat does, and each job's config">jobs</button>
+    </div>
+    <div id="beatBody" class="beatBody"></div>
+  </aside>
+</div>
+<button class="linky beatShow" id="beatShow" type="button" hidden>heartbeat</button>
+
+<footer>
+  <div id="tray" class="tray" hidden>
+    <div class="trayHead">
+      <span>images — sent first, in this order. drag to reorder.</span>
+      <button class="linky" id="clearImages" type="button">clear</button>
+    </div>
+    <div id="trayItems" class="trayItems"></div>
+  </div>
+  <div class="composer">
+    <textarea id="input" rows="1"
+      placeholder="Message the agent…  paste or drop images  ·  Enter to send, Shift+Enter for newline"></textarea>
+    <button id="send" type="button">send</button>
+  </div>
+</footer>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>
