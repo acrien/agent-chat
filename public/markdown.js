@@ -305,9 +305,8 @@ function link(label, href) {
   return anchor;
 }
 
-function setBusy(value) {
-  busy = value;
-  els.interrupt.disabled = !value;
-  els.dot.className = `dot ${value ? 'busy' : 'live'}`;
-}
+/* `setBusy` lived here as a stray copy after the file split — it referenced
+   `busy` and `els`, neither of which this module imports, so calling it would
+   have thrown. dom.js owns it; a second definition is the parallel-architecture
+   corpse in miniature. Removed 2026-08-09. */
 

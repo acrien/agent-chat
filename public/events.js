@@ -1,7 +1,9 @@
 /**
  * events.js — one SSE event in, one change to the page out.
  */
-import { add, atBottom, el, els, notice, setBusy, transcript } from './dom.js';
+// `busy` is a live binding from dom.js — reading it without importing it
+// threw ReferenceError on every `session` event (ES modules are strict).
+import { add, atBottom, busy, el, els, notice, setBusy, transcript } from './dom.js';
 import { chime } from './chime.js';
 import {
   blockAt, closeLanes, laneContainer, blockElement, makeBlock, renderHistory,

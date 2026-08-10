@@ -2,7 +2,7 @@
  * transport.js — POSTs out, and the model/effort selectors they drive.
  */
 import { el, els, notice } from './dom.js';
-import { drawTray } from './images.js';
+import { clearPending, pendingImages } from './images.js';
 
 let models = [];
 
@@ -74,13 +74,19 @@ export async function loadModels() {
 }
 
 export async function send() {
+  // The tray is asked for, not reached into. It was a bare `pending` here
+  // until 2026-08-09 — a module-level variable that survived the file split
+  // as three references to a name this module no longer has. ES modules are
+  // strict, so the first read threw ReferenceError and `send()` failed on
+  // its opening line: Enter did nothing, and neither did the send button.
+  const tray = pendingImages();
   const text = els.input.value.trim();
-  if (!text && pending.length === 0) return;
-  const images = pending.map(({ mediaType, data }) => ({ mediaType, data }));
+  if (!text && tray.length === 0) return;
+
+  const images = tray.map(({ mediaType, data }) => ({ mediaType, data }));
   els.input.value = '';
   els.input.style.height = 'auto';
-  pending = [];
-  drawTray();
+  clearPending();          // empties the tray and redraws it
   await post('/api/send', { text, images });
 }
 

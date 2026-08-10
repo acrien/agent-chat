@@ -12,6 +12,7 @@
  * module, and reads the tree that comes out.
  */
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { install, dump } from './dom-shim.mjs';
 
 const { document } = install();
@@ -114,5 +115,54 @@ guard('the splitter is wired to the grip', () => {
   assert.equal(missing.length, 0, `grip missing handlers: ${missing.join(', ')}`);
 });
 
+
+/**
+ * EVERY CONTROL THE PAGE OWNS, not the ones the author happened to think of.
+ *
+ * The split left `send()` reading a bare `pending` that had become another
+ * module's private state. ES modules are strict, so it threw ReferenceError on
+ * the function's first line and the chat could not send a message at all — by
+ * Enter or by button. Nothing failed at build time and nothing failed here,
+ * because the tests exercised rendering and the break was in a click.
+ *
+ * So the list is derived from the markup, not from memory: every id the page
+ * declares must have a handler behind it, and a new control added to
+ * index.html with no wiring fails this without anyone remembering to add a
+ * case.
+ */
+guard('every declared control has a handler behind it', () => {
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const ids = [...html.matchAll(/\bid="([\w-]+)"/g)].map((m) => m[1]);
+  // Containers the page writes into rather than listens to. Named, so the
+  // exclusion is a decision rather than an oversight.
+  const passive = new Set(['transcript', 'beat', 'beatBody', 'beatPulse', 'gate',
+                           'knownUsers', 'settings', 'settingsBody', 'settingsTitle',
+                           'settingsLead', 'tray', 'trayItems', 'dot', 'loginName',
+                           'model', 'effort']);
+  const unwired = ids
+    .filter((id) => !passive.has(id))
+    .filter((id) => Object.keys(document.getElementById(id).handlers).length === 0);
+  assert.deepEqual(unwired, [], `controls with no handler: ${unwired.join(', ')}`);
+});
+
+await (async () => {
+  const name = 'send reaches the tray without touching its internals';
+  try {
+  let sent = null;
+  globalThis.fetch = async (path, init) => {
+    sent = { path, body: JSON.parse(init.body) };
+    return { ok: true, json: async () => ({}) };
+  };
+  const { send } = await import('../public/transport.js');
+  dom.els.input.value = 'hello';
+  await send();
+  assert.equal(sent?.path, '/api/send', 'send() never reached the server');
+  assert.equal(sent.body.text, 'hello');
+    console.log(`  ok    ${name}`);
+  } catch (err) { fails.push(name); console.log(`  FAIL  ${name}\n        ${err.message}`); }
+})();
+
+// The summary is LAST, and stays last. It was in the middle once: two cases
+// appended after it never ran, and the file reported `all wired` for them.
 console.log(fails.length ? `\n${fails.length} failed` : '\nall wired');
 process.exit(fails.length ? 1 : 0);

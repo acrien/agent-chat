@@ -2,7 +2,7 @@
  * boot.js — wiring and start-up. The only module that knows the others exist.
  */
 import { $, el, els, notice, setBusy, transcript } from './dom.js';
-import { addImages, drawTray, clearPending, pendingImages } from './images.js';
+import { addImages, clearPending } from './images.js';
 import { handle } from './events.js';
 import { fillEffort, labelDefaultEffort, loadModels, post, send } from './transport.js';
 import { openSettings, drawJobList } from './jobs.js';
@@ -46,7 +46,8 @@ for (const type of ['dragover', 'drop']) {
   });
 }
 
-els.clearImages.addEventListener('click', () => { pending = []; drawTray(); });
+// Same stale `pending` as send() had — it threw the moment `clear` was clicked.
+els.clearImages.addEventListener('click', clearPending);
 
 els.model.addEventListener('change', async () => {
   await post('/api/model', { model: els.model.value });
