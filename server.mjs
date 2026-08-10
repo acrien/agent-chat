@@ -138,6 +138,57 @@ const BEAT_DIR = path.join(os.homedir(), '.rainsmoke3', 'heartbeat');
 const BEAT_SETTLE_MS = 150;      // coalesce a write and its rename into one probe
 const BEAT_SWEEP_MS = 20_000;    // cheap enough to ignore, often enough to notice silence
 
+/**
+ * Models reachable through a gateway, which the SDK cannot enumerate.
+ *
+ * THE OWNER, 2026-08-10: "the model should include qwen3.8-max and efforts for
+ * that (effort should be per model), so each model should get different effort
+ * texts, because not everything is called xhigh or ultra or max."
+ *
+ * EFFORT WAS ALREADY PER MODEL — `fillEffort` reads each entry's own
+ * `supportedEffortLevels` — but `supportedModels()` only knows first-party
+ * models, so a gateway model could not appear at all, let alone with its own
+ * levels. These come from the same llm_config RM2 authenticates with, so there
+ * is one place a provider is described and not two.
+ *
+ * NO EFFORT LEVELS UNLESS THE CONFIG NAMES THEM. Inventing `xhigh` for a model
+ * that has never heard of it would send a parameter the gateway rejects, and
+ * the failure would arrive as a dead turn rather than as a bad menu.
+ */
+const LLM_CONFIG = process.env.RAINSMOKE_LLM_CONFIG
+  || path.join(os.homedir(), 'projects', 'rayxiv4', 'config', 'llm_config.json');
+
+function gatewayModels() {
+  // THE GOLDEN RECORD IS THE LIST; the provider config is only consulted for
+  // whether a model can currently be REACHED. Deriving the menu from the
+  // credentials file would mean a model disappearing the moment a key was
+  // rotated out — which is the disappearance being prevented, arriving by a
+  // different door.
+  let golden;
+  try {
+    golden = JSON.parse(fs.readFileSync(path.join(HERE, 'models.golden.json'), 'utf8'));
+  } catch {
+    return [];
+  }
+  let providers = {};
+  try {
+    providers = JSON.parse(fs.readFileSync(LLM_CONFIG, 'utf8')).providers ?? {};
+  } catch { /* no credentials here: still list them, marked unreachable */ }
+
+  return (golden.models ?? []).filter((m) => !m.retired).map((m) => {
+    const prov = providers[m.provider] ?? {};
+    const reachable = Boolean(prov.base_url && prov.api_key);
+    const levels = Array.isArray(m.supportedEffortLevels) ? m.supportedEffortLevels : [];
+    return {
+      value: m.value,
+      displayName: reachable ? m.displayName : `${m.displayName}  (no key)`,
+      description: m.description ?? '',
+      supportsEffort: levels.length > 0,
+      supportedEffortLevels: levels,
+    };
+  });
+}
+
 /** execFile as a promise: the sweep must never block the event loop. */
 function run(bin, args, timeout = 10_000) {
   return new Promise((resolve, reject) => {
@@ -432,16 +483,81 @@ class UserSession {
       return;   // rainsmoke3 absent or unhappy: nothing to deliver
     }
     if (!offer?.prompt) return;
-    this.busy = true;
-    const at = Date.now();
-    const event = { t: 'job', name: offer.job, label: offer.label,
-                    headline: offer.headline, at };
-    this.emit(event, { k: 'job', ...event, t: undefined });
-    this.input.push({
-      type: 'user',
-      message: { role: 'user', content: offer.prompt },
-      parent_tool_use_id: null,
-    });
+
+    // EVERY STEP BETWEEN THE CLAIM AND THE PUSH IS A STEP THAT CAN LOSE A
+    // BATCH, and one did: the claim consumed the offer, the delivery did not
+    // happen, and the turns were gone while the stream still reported the
+    // round had started. So a delivery that throws puts the batch back.
+    try {
+      this.busy = true;
+      const at = Date.now();
+      const event = { t: 'job', name: offer.job, label: offer.label,
+                      headline: offer.headline, at };
+      this.emit(event, { k: 'job', ...event, t: undefined });
+      this.input.push({
+        type: 'user',
+        message: { role: 'user', content: offer.prompt },
+        parent_tool_use_id: null,
+      });
+      // WHAT THE COMPLETION REPORT WILL BE ABOUT. The poller used to infer a
+      // finished round from "an agent reply appeared after the claim" — and
+      // this session produces replies of its own, so an unrelated one ended
+      // the round and advanced the index past turns nobody read.
+      this.jobInFlight = offer.job;
+      this.jobText = '';
+    } catch (err) {
+      this.busy = false;
+      this.jobInFlight = null;
+      this.emitError(`could not deliver the ${offer.job} batch: ${err?.message ?? err}`);
+      try { await run(RM3_BIN, ['review', 'unclaim']); } catch { /* it stays in flight */ }
+    }
+  }
+
+  /**
+   * Tell rainsmoke3 the job turn is over — the only party that knows.
+   *
+   * Called on `result`, which is the SDK saying this turn ended. Inference was
+   * what went wrong: the poller looked for any agent reply after the claim, and
+   * got one that had nothing to do with the review.
+   */
+  async finishJob(ok) {
+    if (!this.jobInFlight) return;
+    this.jobInFlight = null;
+
+    // A FAILED TURN READ NOTHING. Measured 2026-08-10: a 30-turn round died on
+    // `authentication_failed` partway through and the index advanced past all
+    // thirty anyway, because `result` fires for a failed run exactly as it does
+    // for a finished one. Those turns were then marked reviewed and would never
+    // be offered again — the same hole as claiming-before-delivery, arriving
+    // through the other end.
+    //
+    // This is the rule already written into `exercised.py` and not carried
+    // here: a red run is evidence the thing BROKE, not evidence it was done.
+    // THE SOURCE DECLARES, THE TARGET SEARCHES. `ok` is the SDK saying the
+    // process ended without erroring — which a turn that read nothing also
+    // says. The code is put there by the reader or it is not there at all.
+    //
+    // 101 read the batch · 102 read part of it · 190 could not · absent = 190,
+    // because a turn that died before writing looks exactly like one that
+    // ignored the instruction, and both establish nothing.
+    const declared = /\[RM3-REVIEW:\s*(\d{3})\]/g;
+    const seen = [...String(this.jobText ?? '').matchAll(declared)].map((m) => Number(m[1]));
+    const code = seen.length ? seen[seen.length - 1] : 0;
+    this.jobText = '';
+    const read = ok && (code === 101 || code === 102);
+    const action = read ? 'complete' : 'unclaim';
+    try {
+      await run(RM3_BIN, ['review', action]);
+      if (!read) {
+        this.emitError(
+          `the review batch goes back unread — result ${ok ? 'ok' : 'failed'}, `
+          + `declared code ${code || 'none'}`,
+        );
+      }
+    } catch (err) {
+      // The batch stays in flight and the poller's deadline hands it back.
+      this.emitError(`could not ${action} the review batch: ${err?.message ?? err}`);
+    }
   }
 
   stopHeartbeat() {
@@ -532,7 +648,19 @@ class UserSession {
         this.start({ fresh: true });
         return;
       }
-      this.broadcast({ t: 'error', text: err?.message ?? String(err) });
+      // RECORDED, NOT ONLY BROADCAST. THE OWNER, 2026-08-10, reading an error
+      // off the pod's page that the agent could not see: "why can't you see
+      // it? do you need my credentials? my permission?"
+      //
+      // Neither. `broadcast` writes to connected sockets and nowhere else, so
+      // an error with no browser attached was never written down — and the
+      // pod is a machine nobody attaches a browser to BY DESIGN. The failure
+      // that mattered most was the one guaranteed to be invisible: a session
+      // set busy with no process behind it, reported to an empty room.
+      //
+      // `emit` puts it in the transcript, which is on disk, which anything can
+      // read afterwards — a person, a mirror, or the review itself.
+      this.emitError(err?.message ?? String(err));
     }
   }
 
@@ -544,6 +672,15 @@ class UserSession {
   }
 
   /** Broadcast live, and append to the durable transcript. */
+  /** An error the reader can still find tomorrow. See its one call site. */
+  emitError(text) {
+    const event = { t: 'error', text: String(text), at: Date.now() };
+    this.emit(event, { k: 'error', ...event, t: undefined });
+    // Also to the process log: a server whose transcript cannot be written is
+    // exactly when an error most needs somewhere to go.
+    console.error(`  session error (${this.userId}): ${String(text).slice(0, 300)}`);
+  }
+
   emit(event, record) {
     this.broadcast(event);
     if (record) appendRecord(this.userId, record);
@@ -604,6 +741,10 @@ class UserSession {
           const d = ev.delta ?? {};
           if (d.type === 'text_delta') {
             this.broadcast({ t: 'delta', lane, index: ev.index, kind: 'text', text: d.text });
+            // THE CODE IS IN THE REPLY, so the reply has to be kept. Only while
+            // a job turn is in flight — the owner's turns are already on disk
+            // and this would be a second copy of them in memory.
+            if (this.jobInFlight) this.jobText = (this.jobText ?? '') + d.text;
           } else if (d.type === 'thinking_delta') {
             this.broadcast({ t: 'delta', lane, index: ev.index, kind: 'thinking', text: d.thinking });
           }
@@ -628,7 +769,7 @@ class UserSession {
           }
         }
         if (message.error) {
-          this.broadcast({ t: 'error', text: message.error.message ?? String(message.error) });
+          this.emitError(message.error.message ?? String(message.error));
         }
         break;
       }
@@ -666,6 +807,7 @@ class UserSession {
         };
         this.emit(event, { k: 'result', ...event, t: undefined });
         this.reportSections();   // async on purpose: never delay the result
+        this.finishJob(message.subtype === 'success');
         break;
       }
     }
@@ -1024,7 +1166,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url === '/api/models') {
-      const models = await session.q.supportedModels();
+      const models = [...await session.q.supportedModels(), ...gatewayModels()];
       return json(res, 200, {
         models,
         current: session.model,

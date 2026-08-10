@@ -1,0 +1,69 @@
+{
+  "_": [
+    "GOLDEN RECORD. Added to; never rewritten.",
+    "",
+    "THE OWNER, 2026-08-10: 'RM2 kept deleting Kimi and qwen so when I'm out of",
+    "rate limit, I have to add it back in and constantly reselect them for the",
+    "greengrass, bluesky, whitecloud agents again.'",
+    "",
+    "That is a loss with no error attached to it. A model vanishing from a menu",
+    "reads as a model that was never there, so the cost is paid every time by a",
+    "person retyping something they already configured — and it lands exactly",
+    "when they are out of quota and least able to spend time on it.",
+    "",
+    "SO NOTHING WRITES THIS FILE. The server reads it and merges it with what",
+    "the SDK reports; no endpoint, no job and no agent edits it. Removing a",
+    "model is a deliberate act by a person, and a retired one keeps its entry",
+    "with a `retired` note rather than disappearing — see opus-5 when 5.1",
+    "arrives. rainsmoke3's golden-record gate refuses a write that drops an",
+    "entry, so an agent tidying this file is stopped rather than trusted.",
+    "",
+    "EFFORT IS PER MODEL AND NAMED BY ITS OWN PROVIDER. Not everything is",
+    "called xhigh; a model with no effort concept gets an empty list, and the",
+    "selector disables the control rather than offering a level the gateway",
+    "will reject."
+  ],
+  "models": [
+    {
+      "value": "qwen3.8-max",
+      "provider": "qwen",
+      "displayName": "qwen3.8-max",
+      "description": "Alibaba, Anthropic-compatible gateway. 1M context.",
+      "contextTokens": 1000000,
+      "supportedEffortLevels": [],
+      "added": "2026-08-10"
+    },
+    {
+      "value": "qwen3.7-max",
+      "provider": "qwen",
+      "displayName": "qwen3.7-max",
+      "description": "the previous max release; kept because a rollback needs it to still be here",
+      "supportedEffortLevels": [],
+      "added": "2026-08-10"
+    },
+    {
+      "value": "glm-5.2",
+      "provider": "qwen",
+      "displayName": "glm-5.2",
+      "description": "reachable through the same gateway",
+      "supportedEffortLevels": [],
+      "added": "2026-08-10"
+    },
+    {
+      "value": "deepseek-v4-pro",
+      "provider": "qwen",
+      "displayName": "deepseek-v4-pro",
+      "description": "reachable through the same gateway",
+      "supportedEffortLevels": [],
+      "added": "2026-08-10"
+    },
+    {
+      "value": "kimi-k2.5",
+      "provider": "moonshot",
+      "displayName": "kimi-k2.5",
+      "description": "Moonshot, Anthropic-compatible. THE ONE RM2 KEPT DELETING — it stays.",
+      "supportedEffortLevels": [],
+      "added": "2026-08-10"
+    }
+  ]
+}
