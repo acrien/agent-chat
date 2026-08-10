@@ -1109,11 +1109,18 @@ server.listen(PORT, HOST, () => {
 for (const signal of ['SIGTERM', 'SIGINT']) {
   process.once(signal, () => {
     for (const session of sessions.values()) {
-      if (!session.busy) continue;
+      // EVERY SESSION IS TOLD, not only a busy one. This used to skip idle
+      // sessions on the grounds that they had lost nothing — true, and beside
+      // the point. THE OWNER, 2026-08-10: "I need some kind of indicator it
+      // restarted." An idle session is exactly where a restart is invisible:
+      // nothing was cut off, so nothing looked wrong, so the transcript simply
+      // continues across a boundary the reader cannot see.
       const note = {
         t: 'notice',
-        text: 'the server was restarted mid-turn — this reply was cut off. '
-            + 'The conversation resumes; the unfinished answer does not.',
+        text: session.busy
+          ? `the server is restarting (pid ${process.pid}) — this reply was cut off. `
+            + 'The conversation resumes; the unfinished answer does not.'
+          : `the server is restarting (pid ${process.pid}).`,
         at: Date.now(),
       };
       try {
@@ -1123,3 +1130,28 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
     process.exit(0);
   });
 }
+
+/**
+ * AND THE OTHER HALF: say when it came back.
+ *
+ * The going-down notice is written by a process about to die, into a stream
+ * that dies with it — a page connected at that moment may never render it, and
+ * a page connected LATER never had it. So the coming-up half is written here,
+ * on boot, into the transcript rather than only the connection: it is on disk,
+ * so it is there whenever anyone next looks.
+ *
+ * WRITTEN PER USER, ONCE, at startup. A session is constructed lazily on first
+ * request, so this walks the user directories rather than `sessions` — which is
+ * empty at this point and would have made the marker appear only for whoever
+ * happened to connect during the first request, which is nobody.
+ */
+try {
+  const usersDir = path.join(DATA_DIR, 'users');
+  for (const userId of fs.readdirSync(usersDir)) {
+    if (!fs.existsSync(transcriptPath(userId))) continue;   // never spoke here
+    appendRecord(userId, {
+      k: 'notice',
+      text: `the server restarted and is back (pid ${process.pid}).`,
+    });
+  }
+} catch { /* a marker that cannot be written must not stop the server */ }
