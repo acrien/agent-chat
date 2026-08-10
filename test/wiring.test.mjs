@@ -272,6 +272,28 @@ guard('the pod stream gets its own section', () => {
   assert.match(panel, /countdown started/, 'the pod row lost its sentence');
 });
 
+/**
+ * THE COUNTDOWN MUST NOT PROMISE WHAT IT CANNOT DO. Ten seconds is the window
+ * to cancel; the clear happens when the handoff LANDS, which takes as long as
+ * it takes. A line saying "clearing in 10s" would be lying about the one thing
+ * it is counting down to.
+ */
+guard('the clear says what each phase actually means', () => {
+  handle({ t: 'clearing', phase: 'countdown', seconds: 10, at: AT });
+  handle({ t: 'clearing', phase: 'handoff', at: AT });
+  handle({ t: 'clearing', phase: 'done', at: AT });
+  const tree = dump(dom.transcript).join('\n');
+  assert.match(tree, /clear in 10s/, 'no countdown shown');
+  assert.match(tree, /not on a timer/, 'the handoff phase implied a timed clear');
+  assert.match(tree, /handoff is now the first thing/, 'the done phase said nothing useful');
+});
+
+guard('the /clear control is wired', () => {
+  const button = document.getElementById('clearStart');
+  assert.ok(button, 'no /clear control on the page');
+  assert.equal(typeof button.handlers.click, 'function', '/clear has no handler');
+});
+
 // The summary is LAST, and stays last. It was in the middle once: two cases
 // appended after it never ran, and the file reported `all wired` for them.
 console.log(fails.length ? `\n${fails.length} failed` : '\nall wired');

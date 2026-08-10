@@ -47,6 +47,20 @@ export function handle(ev) {
       setBusy(true);
       break;
 
+    case 'clearing': {
+      // ONE LINE THAT REWRITES ITSELF, not four notices. The phases are one
+      // event moving through states, and a reader wants to know where it is
+      // now — not to reconstruct that from a list.
+      const text = {
+        countdown: `context clear in ${ev.seconds}s — press /clear again to cancel`,
+        handoff: 'writing the handoff… the clear happens when it lands, not on a timer',
+        cancelled: 'clear cancelled',
+        done: 'context cleared — the handoff is now the first thing this session knows',
+      }[ev.phase] ?? ev.phase;
+      notice(text);
+      break;
+    }
+
     case 'job':
       // A turn the owner did not start. Same divider, deliberately NOT the
       // same bubble — see jobBubble on why a job may not wear the owner's face.

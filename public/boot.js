@@ -49,6 +49,16 @@ for (const type of ['dragover', 'drop']) {
 // Same stale `pending` as send() had — it threw the moment `clear` was clicked.
 els.clearImages.addEventListener('click', clearPending);
 
+// PRESSING IT AGAIN CANCELS. The ten seconds exist to be usable, and a second
+// control to stop something that started one click ago is a second thing to
+// find in a hurry.
+let clearArmed = false;
+document.getElementById('clearStart')?.addEventListener('click', async () => {
+  await post('/api/clear', clearArmed ? { cancel: true } : {});
+  clearArmed = !clearArmed;
+  setTimeout(() => { clearArmed = false; }, 11000);
+});
+
 els.model.addEventListener('change', async () => {
   await post('/api/model', { model: els.model.value });
   fillEffort(els.model.value);

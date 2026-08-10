@@ -210,7 +210,38 @@ const IMAGE_MEDIA_TYPES = new Map([
 const MAX_IMAGES_PER_TURN = 10;
 const MAX_IMAGE_CHARS = 5_000_000;    // base64 length, ~3.7 MB decoded
 const MAX_BODY_BYTES = 60_000_000;
-const HISTORY_REPLAY_LIMIT = 400;     // records sent to a newly attached page
+const HISTORY_REPLAY_LIMIT = 400;
+
+/**
+ * What the session about to end is asked to write down.
+ *
+ * IT ASKS FOR STATE, NOT A SUMMARY. "Summarise this conversation" produces
+ * prose about what was discussed; what the next session needs is what is
+ * UNFINISHED, what was decided and why, and what is running right now — the
+ * things that are expensive to rediscover and invisible in a transcript.
+ */
+const HANDOFF_PROMPT = [
+  'HANDOFF. This session is about to be cleared. Write the note your successor',
+  'needs — it will start with nothing but this.',
+  '',
+  'Cover, in this order, and briefly:',
+  '  1. WHAT IS IN FLIGHT RIGHT NOW — anything running, waiting, or half-done,',
+  '     and where its state lives on disk.',
+  '  2. WHAT THE OWNER ASKED FOR THAT IS NOT DONE, in their words where you can.',
+  '  3. DECISIONS AND THEIR REASONS — especially ones that look arbitrary from',
+  '     outside, because those are the ones a successor undoes by accident.',
+  '  4. WHAT IS KNOWN TO BE BROKEN OR UNVERIFIED, said plainly.',
+  '  5. THE NEXT CONCRETE STEP.',
+  '',
+  'Write it for someone competent who was not here. No preamble, no apology,',
+  'no recap of what a transcript would already show. Facts, paths, and open',
+  'questions.',
+].join('\n');
+
+const HANDOFF_HEADER =
+  'You are continuing work after a context clear. The note below was written by '
+  + 'the session that just ended, about its own unfinished work. Treat it as the '
+  + 'state of the world, verify anything it claims is running, and continue.';     // records sent to a newly attached page
 
 // --- pushable stream -------------------------------------------------------
 
@@ -745,6 +776,7 @@ class UserSession {
             // a job turn is in flight — the owner's turns are already on disk
             // and this would be a second copy of them in memory.
             if (this.jobInFlight) this.jobText = (this.jobText ?? '') + d.text;
+            if (this.handoffPending) this.handoffText = (this.handoffText ?? '') + d.text;
           } else if (d.type === 'thinking_delta') {
             this.broadcast({ t: 'delta', lane, index: ev.index, kind: 'thinking', text: d.thinking });
           }
@@ -808,6 +840,16 @@ class UserSession {
         this.emit(event, { k: 'result', ...event, t: undefined });
         this.reportSections();   // async on purpose: never delay the result
         this.finishJob(message.subtype === 'success');
+        if (this.handoffPending) {
+          // THE CLEAR HAPPENS HERE, when the handoff exists — not when a
+          // countdown reaches zero. A timer would cut it off mid-sentence and
+          // the successor would inherit half a note.
+          const note = this.handoffText ?? '';
+          this.handoffText = '';
+          if (note.trim()) this.finishClear(note);
+          else { this.handoffPending = false; this.clearing = null;
+                 this.emitError('the handoff came back empty — not clearing'); }
+        }
         break;
       }
     }
@@ -884,6 +926,94 @@ class UserSession {
       { k: 'user', text, images: stored, at },
     );
     this.input.push({ type: 'user', message: { role: 'user', content }, parent_tool_use_id: null });
+  }
+
+  /**
+   * Hand off, then start again — the thread kept, the context dropped.
+   *
+   * THE OWNER, 2026-08-10: "Build a /clear option, make it so when I turn it
+   * on, it'll start a clear countdown of 10 seconds, as it starts counting
+   * down, you it needs to kick off a call to do the handoff, so after /clear,
+   * the session after knows exactly what works are needed, what discussions
+   * were going on and where we left off [...] research shows that LLMs lost
+   * reasoning at the middle, so around the 500k token range."
+   *
+   * THE ORDER IS THE WHOLE DESIGN. A clear that fires on a timer would cut the
+   * handoff off mid-sentence, and a handoff that arrives after the clear
+   * arrives in a session that has already forgotten what it was about. So the
+   * ten seconds are ONLY the window to cancel; the handoff runs next, at
+   * whatever length it needs; and the clear happens when the handoff LANDS.
+   * A countdown that promised to clear at zero would be lying about the one
+   * thing it is counting down to.
+   *
+   * THE HANDOFF IS WRITTEN BY THE SESSION BEING ENDED, which is the only party
+   * that has the context. Nothing else could reconstruct it, and by the time
+   * anything else could ask, it is gone.
+   */
+  async startClear(seconds = 10) {
+    if (this.clearing) return { already: true };
+    this.clearing = { at: Date.now(), seconds, phase: 'countdown' };
+    this.broadcast({ t: 'clearing', phase: 'countdown', seconds, at: Date.now() });
+
+    await new Promise((r) => { this.clearTimer = setTimeout(r, seconds * 1000); });
+    if (!this.clearing) return { cancelled: true };      // cancelled mid-count
+
+    // THE HANDOFF IS A TURN LIKE ANY OTHER, so it is subject to being busy.
+    // Waiting is right: interrupting the owner's turn to write a handoff about
+    // it would lose the very thing the handoff is for.
+    this.clearing.phase = 'handoff';
+    this.broadcast({ t: 'clearing', phase: 'handoff', at: Date.now() });
+    this.handoffPending = true;
+    this.busy = true;
+    this.input.push({
+      type: 'user',
+      message: { role: 'user', content: HANDOFF_PROMPT },
+      parent_tool_use_id: null,
+    });
+    return { started: true };
+  }
+
+  cancelClear() {
+    clearTimeout(this.clearTimer);
+    const was = Boolean(this.clearing);
+    this.clearing = null;
+    this.handoffPending = false;
+    if (was) this.broadcast({ t: 'clearing', phase: 'cancelled', at: Date.now() });
+    return { cancelled: was };
+  }
+
+  /**
+   * The handoff has landed: keep it, drop everything else, hand it forward.
+   *
+   * The transcript is NOT wiped. What is cleared is the model's context — the
+   * expensive half — while the record of the conversation stays exactly where
+   * it was. Clearing both would make `/clear` a thing nobody dares press.
+   */
+  finishClear(text) {
+    if (!this.handoffPending) return;
+    this.handoffPending = false;
+    this.clearing = null;
+
+    const note = { t: 'notice', text: 'context cleared — the handoff below is what the new session starts with.', at: Date.now() };
+    this.emit(note, { k: 'notice', ...note, t: undefined });
+
+    try { this.q?.close?.(); } catch { /* already gone */ }
+    this.input?.close();
+    this.sdkSessionId = null;                 // a NEW session, not a resumed one
+    writeState(this.userId, { sessionId: null });
+    this.start({ fresh: true });
+    this.busy = false;
+    this.broadcast({ t: 'clearing', phase: 'done', at: Date.now() });
+
+    // The handoff goes in as the first thing the new session sees. It is the
+    // agent's own words about its own work, which is the only summary that was
+    // ever going to survive the boundary.
+    this.input.push({
+      type: 'user',
+      message: { role: 'user', content: `${HANDOFF_HEADER}\n\n${text}` },
+      parent_tool_use_id: null,
+    });
+    this.busy = true;
   }
 
   /** Changing cwd means a new query(); it is fixed for a session's lifetime. */
@@ -1127,6 +1257,13 @@ const server = http.createServer(async (req, res) => {
     // The jobs page. rainsmoke3 owns the list, each job owns its own settings,
     // and this passes both through — so a job added there needs no change here
     // and none on the page.
+    if (url === '/api/clear' && req.method === 'POST') {
+      const { cancel } = await readBody(req);
+      if (cancel) return json(res, 200, session.cancelClear());
+      session.startClear(10);            // not awaited: the countdown is the point
+      return json(res, 200, { started: true, seconds: 10 });
+    }
+
     if (url === '/api/jobs') {
       const body = req.method === 'POST' ? await readBody(req) : null;
       try {
