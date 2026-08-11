@@ -27,6 +27,77 @@ let rows = [];
 let gateways = [];
 
 /**
+ * Drag a panel by any part of it that is not a control.
+ *
+ * THE OWNER, 2026-08-11: "Need all popups to be moveable by click and drag
+ * anywhere that's a non input field on the popup."
+ *
+ * WHY NOT A TITLE BAR, which is the usual answer. A title bar is one thin
+ * target, and the case that produced this request was a dialog whose top had
+ * gone off-screen — the exact moment a title bar is unreachable. Every inert
+ * surface being a handle means the part you CAN see is always the part you can
+ * move.
+ *
+ * IT STAYS REACHABLE. Dragging is clamped so a margin of the panel remains
+ * inside the viewport on every side; a panel dragged fully off-screen would
+ * reproduce the bug this exists to fix, by hand.
+ */
+const NOT_A_HANDLE = 'input, select, textarea, button, option, a, [contenteditable]';
+
+function makeDraggable(panel) {
+  let dragging = false;
+  let startX = 0;
+  let startY = 0;
+  let baseX = 0;
+  let baseY = 0;
+
+  panel.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || e.target.closest(NOT_A_HANDLE)) return;
+    const rect = panel.getBoundingClientRect();
+    // Pinned where it currently sits, so the first drag does not jump: until
+    // now the panel was centred by the backdrop's layout, and switching to
+    // absolute mid-gesture would otherwise snap it to the origin.
+    panel.style.position = 'absolute';
+    panel.style.margin = '0';
+    panel.style.left = `${rect.left}px`;
+    panel.style.top = `${rect.top}px`;
+    baseX = rect.left;
+    baseY = rect.top;
+    startX = e.clientX;
+    startY = e.clientY;
+    dragging = true;
+    panel.classList.add('dragging');
+    panel.setPointerCapture(e.pointerId);
+  });
+
+  panel.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const keep = 48;   // how much must stay on screen, in px
+    const w = panel.offsetWidth;
+    const h = panel.offsetHeight;
+    const x = Math.min(
+      Math.max(baseX + (e.clientX - startX), keep - w),
+      window.innerWidth - keep,
+    );
+    const y = Math.min(
+      Math.max(baseY + (e.clientY - startY), 0),   // never above the top edge
+      window.innerHeight - keep,
+    );
+    panel.style.left = `${x}px`;
+    panel.style.top = `${y}px`;
+  });
+
+  const stop = (e) => {
+    if (!dragging) return;
+    dragging = false;
+    panel.classList.remove('dragging');
+    try { panel.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+  };
+  panel.addEventListener('pointerup', stop);
+  panel.addEventListener('pointercancel', stop);
+}
+
+/**
  * An in-page dialog, because a browser prompt is not this page.
  *
  * THE OWNER, 2026-08-11: "why is it a google popup not a web page popup?"
@@ -42,8 +113,28 @@ function dialog({ title, lead, fields = [], ok = 'save', danger = false }) {
   return new Promise((resolve) => {
     const back = el('div', 'llmDialogBack');
     const card = el('div', `llmDialog${danger ? ' danger' : ''}`);
-    card.append(el('h2', null, title));
-    if (lead) card.append(el('p', 'means', lead));
+
+    // THE WAY OUT IS ALWAYS REACHABLE, and it was not. Reported 2026-08-11:
+    // "takes up more than my screen height, and not adjustable/movable, so i
+    // cannot close it". The card was centred in a grid overlay, and a centred
+    // child taller than its container overflows EQUALLY top and bottom — the
+    // top half lands above the viewport where nothing can scroll to it. A
+    // dialog that cannot be dismissed is worse than no dialog: it takes the
+    // page with it.
+    //
+    // So there are now three ways out that do not depend on height at all: a
+    // close control in the header, Escape, and the backdrop. The buttons sit
+    // in a footer that never scrolls away, and only the FIELDS scroll.
+    const head = el('div', 'llmDialogHead');
+    head.append(el('h2', null, title));
+    const shut = el('button', 'llmDialogX', '×');
+    shut.type = 'button';
+    shut.title = 'close (Esc)';
+    head.append(shut);
+    card.append(head);
+
+    const scroll = el('div', 'llmDialogBody');
+    if (lead) scroll.append(el('p', 'means', lead));
 
     const inputs = new Map();
     for (const f of fields) {
@@ -70,16 +161,24 @@ function dialog({ title, lead, fields = [], ok = 'save', danger = false }) {
       inputs.set(f.name, node);
       wrap.append(node);
       if (f.hint) wrap.append(el('span', 'llmHint', f.hint));
-      card.append(wrap);
+      scroll.append(wrap);
     }
 
     const err = el('p', 'llmError');
-    card.append(err);
+    scroll.append(err);
+    card.append(scroll);
 
     const bar = el('div', 'llmDialogBar');
     const cancel = el('button', 'pill', 'cancel');
     const confirm = el('button', `pill ${danger ? 'cancel' : 'on-off on'}`, ok);
-    const close = (value) => { back.remove(); resolve(value); };
+    const close = (value) => {
+      document.removeEventListener('keydown', onKey);
+      back.remove();
+      resolve(value);
+    };
+    const onKey = (e) => { if (e.key === 'Escape') close(null); };
+    document.addEventListener('keydown', onKey);
+    shut.addEventListener('click', () => close(null));
     cancel.addEventListener('click', () => close(null));
     confirm.addEventListener('click', () => {
       const out = {};
@@ -93,6 +192,7 @@ function dialog({ title, lead, fields = [], ok = 'save', danger = false }) {
     // lands outside a form must not commit what is in it.
     back.addEventListener('click', (e) => { if (e.target === back) close(null); });
     els.settings.append(back);
+    makeDraggable(card);
     card.querySelector('input, select')?.focus();
     dialog.showError = (text) => { err.textContent = text; };
   });

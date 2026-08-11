@@ -957,16 +957,44 @@ footer {
   border: 1px solid var(--line);
   border-left: 3px solid var(--accent);
   border-radius: 6px;
-  padding: 16px 18px;
   width: min(460px, 100%);
-  display: flex; flex-direction: column; gap: 9px;
-  max-height: 80vh; overflow-y: auto;
+  display: flex; flex-direction: column;
+  /* NEVER TALLER THAN THE SPACE IT IS IN. A centred child that outgrows its
+     container overflows equally top and bottom, and the top half lands above
+     the viewport where nothing can scroll to it — which is how a dialog
+     becomes impossible to close. Only the BODY scrolls; the header and the
+     buttons are always on screen whatever the content does. */
+  max-height: min(80vh, 100%);
+  overflow: hidden;
 }
+.llmDialog.dragging { cursor: grabbing; user-select: none; }
+.llmDialogHead {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 14px 16px 8px;
+  cursor: grab;
+}
+.llmDialogBody {
+  overflow-y: auto;
+  padding: 0 16px;
+  display: flex; flex-direction: column; gap: 9px;
+  /* The one surface that must not be a drag handle is the one you scroll. */
+  cursor: auto;
+}
+.llmDialogX {
+  background: none; border: none; color: var(--dim);
+  font-size: 20px; line-height: 1; padding: 0 2px; cursor: pointer;
+}
+.llmDialogX:hover { color: var(--fg-strong); }
 /* A destructive confirm is marked by its rule, not by shouting: the accent
    changes, the type does not. */
 .llmDialog.danger { border-left-color: var(--err); }
 .llmDialog h2 { font-size: 1.02em; color: var(--fg-strong); margin: 0; }
-.llmDialogBar { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.llmDialogBar {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 10px 16px 14px;
+  border-top: 1px solid var(--line);
+  cursor: grab;
+}
 .llmError:empty { display: none; }
 .llmError { color: var(--err); font-size: .86em; margin: 0; }
 .llmCompany { color: var(--dim); font-size: .82em; }

@@ -316,6 +316,37 @@ guard('the /restart control is wired', () => {
   assert.equal(typeof button.handlers.click, 'function', '/restart has no handler');
 });
 
+guard('a dialog can always be dismissed, whatever its height', () => {
+  // THE BUG THIS PINS, reported 2026-08-11: "takes up more than my screen
+  // height, and not adjustable/movable, so i cannot close it". A centred child
+  // taller than its container overflows equally top and bottom, putting the
+  // top half above the viewport where nothing scrolls to it. Three ways out
+  // that do not depend on height, and only the body may scroll.
+  const src = readFileSync(new URL('../public/llms.js', import.meta.url), 'utf8');
+  assert.match(src, /llmDialogX/, 'no close control in the dialog header');
+  assert.match(src, /e\.key === 'Escape'/, 'Escape does not close the dialog');
+  assert.match(src, /e\.target === back\) close\(null\)/, 'the backdrop does not dismiss');
+  assert.match(src, /makeDraggable\(card\)/, 'the dialog cannot be moved');
+
+  const css = readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+  // The BODY scrolls; the card itself must not, or the footer scrolls away
+  // with the content and the buttons leave the screen again.
+  assert.match(css, /\.llmDialogBody\s*\{[^}]*overflow-y:\s*auto/, 'the dialog body does not scroll');
+  assert.match(css, /\.llmDialog\s*\{[^}]*overflow:\s*hidden/, 'the card scrolls, so its footer can leave');
+  assert.match(css, /\.llmDialog\s*\{[^}]*max-height:\s*min\(/, 'the card is not capped to the viewport');
+});
+
+guard('dragging cannot put a panel out of reach', () => {
+  // A panel dragged fully off-screen reproduces the same defect by hand, so
+  // the clamp is part of the fix rather than a nicety.
+  const src = readFileSync(new URL('../public/llms.js', import.meta.url), 'utf8');
+  assert.match(src, /const keep = \d+/, 'no margin is kept on screen while dragging');
+  assert.match(src, /window\.innerHeight - keep/, 'a panel can be dragged below the fold');
+  assert.match(src, /Math\.max\([^)]*\/\/ never above the top edge|Math\.max\(baseY/, 'a panel can be dragged above the top');
+  // Controls are not handles: dragging from a select would fight the control.
+  assert.match(src, /NOT_A_HANDLE\s*=\s*'input, select, textarea, button/, 'controls are draggable, so they cannot be used');
+});
+
 guard('the llm config control is wired', () => {
   // A CONFIG PAGE NOBODY CAN OPEN is the same as no config page, and it fails
   // silently: the module imports, the tests pass, and the button was never
