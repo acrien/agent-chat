@@ -39,9 +39,10 @@ import { fileURLToPath } from 'node:url';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
 import * as store from './state.mjs';
-// The model menu and the spawn path read ONE routing verdict — see routing.mjs
+// The model menu and every spawn path read ONE verdict — see router/turn_route.mjs
 // for why two separate checks was the dropdown that selected nothing.
-import { gatewayModels, providerFor } from './routing.mjs';
+import { routeTurn, menu } from './router/turn_route.mjs';
+import { providerSources } from './router/provider_registry.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(HERE, 'public');
@@ -72,37 +73,25 @@ const TOKEN = LOOPBACK ? '' : (flag('token') || crypto.randomBytes(16).toString(
 const KEY_COOKIE = 'agentchat_key';
 
 /**
- * Gateway routing, loaded before any session starts.
+ * NOTHING LOADS A GATEWAY INTO THIS PROCESS. There used to be a
+ * `loadProviderEnv` here that read provider.env into `process.env` at startup,
+ * so that a restart could not forget the gateway. It could not forget it for
+ * ANY turn — including the ones that had chosen a different provider.
  *
- * WITHOUT IT THE SITE SILENTLY BILLS THE WRONG ACCOUNT. `supportedModels()`
- * lists gateway models because it reads ~/.claude.json, but nothing routes the
- * request anywhere those models exist — so a restart that forgot the env sent
- * `qwen3.8-max` to api.anthropic.com and got `invalid_request`, empty turn
- * (2026-08-10). Worse than the error: with an Anthropic model selected it
- * works perfectly and quietly spends the quota the gateway exists to protect.
+ * WHAT THAT COST, measured 2026-08-11 from this server's own log:
  *
- * Read here rather than exported by whoever launches it, because "remember to
- * source this first" is a step that gets skipped exactly once.
+ *     [session acrien-gmail.com] model=opus[1m] effort=(default) ...
+ *       session error (acrien-gmail.com): rate_limit
+ *
+ * The dropdown worked and the query respawned; the request still went to the
+ * Alibaba gateway, because the old routing returned null for a first-party
+ * model — "no environment needed" — and the SDK's default child env is
+ * `{...process.env}`. Opus was served out of qwen's quota.
+ *
+ * Its one assignment, `PROVIDER_VARS`, was never read by anything: mutating
+ * the environment WAS the whole mechanism. Providers are now held as data and
+ * read per turn — see `router/provider_registry.mjs`.
  */
-const PROVIDER_ENV = flag('provider-env', path.join(os.homedir(), '.agent-chat', 'provider.env'));
-function loadProviderEnv(file) {
-  let text;
-  try { text = fs.readFileSync(file, 'utf8'); } catch { return []; }
-  const names = [];
-  for (const line of text.split('\n')) {
-    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
-    if (!m) continue;
-    let [, name, value] = m;
-    value = value.trim().replace(/^(['"])(.*)\1$/, '$2');
-    process.env[name] = value;
-    names.push(name);
-  }
-  // An ambient API key outranks the gateway token and the turn comes back
-  // rejected and empty — lab.sh:221 says the same thing one layer down.
-  if (names.length) delete process.env.ANTHROPIC_API_KEY;
-  return names;
-}
-const PROVIDER_VARS = loadProviderEnv(PROVIDER_ENV);
 
 /** rainsmoke3's single entry point; absent is fine, the page just stays quiet. */
 const RM3_BIN = flag('rm3', path.join(os.homedir(), 'projects', 'rainsmoke3', 'ops', 'rm3'));
@@ -195,8 +184,8 @@ const BEAT_SWEEP_MS = 20_000;    // cheap enough to ignore, often enough to noti
  * that has never heard of it would send a parameter the gateway rejects, and
  * the failure would arrive as a dead turn rather than as a bad menu.
  */
-// The gateway half of the model menu, and the routing verdict behind it, live
-// in routing.mjs — imported above, where the imports belong.
+// The menu and the verdict behind it live in router/ — imported above, where
+// the imports belong.
 
 /** execFile as a promise: the sweep must never block the event loop. */
 function run(bin, args, timeout = 10_000) {
@@ -430,6 +419,16 @@ class UserSession {
     //: and the whole point is to say what default resolves to.
     this.activeEffort = state.activeEffort ?? null;
     this.thinking = state.thinking ?? THINKING ?? null;
+    //: Prompt caching, as a switch rather than a provider's habit. The SDK has
+    //: no per-request cache control — the CLI places its own cache_control
+    //: breakpoints — so the only lever is DISABLE_PROMPT_CACHING, which makes
+    //: caching exactly the kind of ambient variable the router owns. null
+    //: leaves the provider's own default; true/false is a decision.
+    this.cache = state.cache ?? null;
+    //: The verdict the live query was spawned with — what the page reports and
+    //: what `/api/models` answers with, so the selector shows what is in force
+    //: rather than what was asked for.
+    this.route = null;
     this.streaming = { main: new Set(), sub: new Set() };
     this.q = null;
     this.input = null;
@@ -687,24 +686,32 @@ class UserSession {
       includePartialMessages: true,
     };
     if (this.model) options.model = this.model;
-    // THE ROUTING. A gateway model carries its provider's environment — base
-    // url and token — without which its name would go to Anthropic, which does
-    // not know it, and the turn would die looking like a model failure. A
-    // first-party model (or none) leaves the env to the session's own OAuth.
-    const routed = providerFor(this.model);
-    if (routed?.env) options.env = routed.env;
-    // AN EFFORT THE MODEL CANNOT TAKE IS NOT SENT. qwen3.8-max declares no
-    // effort levels; passing one would send a parameter the gateway rejects,
-    // and the failure would arrive as a dead turn rather than as a bad menu.
-    const takesEffort = !(routed?.model) || Boolean(routed.model.supportedEffortLevels?.length);
-    if (this.effort && takesEffort) options.effort = this.effort;
 
-    // THINKING OFF IS THE ANTHROPIC FORM, EVEN ON A QWEN MODEL. Probed against
-    // the Alibaba gateway 2026-08-10: `thinking:{type:"disabled"}` suppresses
-    // the thinking blocks; qwen's own `enable_thinking:false` is ignored there.
-    // So there is no per-provider branch — one field, honoured by both.
-    if (this.thinking === 'disabled') options.thinking = { type: 'disabled' };
-    else if (this.thinking === 'adaptive') options.thinking = { type: 'adaptive' };
+    // THE ROUTE. One call decides the provider, the complete child environment,
+    // and every provider-facing option — effort, thinking, prompt caching, the
+    // context window, and the turn ceiling. Nothing here branches on a provider
+    // name, because the moment this file knows one, it is a second site that
+    // can disagree with the first.
+    const route = routeTurn({
+      model: this.model,
+      effort: this.effort,
+      thinking: this.thinking,
+      cache: this.cache,
+    });
+    // ALWAYS SET, NEVER INHERITED. The SDK's default is `{...process.env}`; a
+    // route that declined to say what a turn's environment is would be handing
+    // that decision to whatever last exported a variable. See the block above.
+    options.env = route.env;
+    Object.assign(options, route.options);
+    this.route = route;
+
+    // A DROPPED OPTION IS ANNOUNCED. The old code suppressed an effort the
+    // gateway would reject — correctly — and said nothing, so the selector went
+    // on showing a level that was not in force. Three silences (unsupported,
+    // unverified, out of range) are now one visible line.
+    for (const d of route.dropped) {
+      this.broadcast({ t: 'notice', text: `${d.what} ${JSON.stringify(d.asked)} not sent — ${d.why}` });
+    }
 
     // The only honest source for the EFFECTIVE effort. `supportedModels()`
     // lists which levels a model allows but not which one is in force, and
@@ -728,7 +735,14 @@ class UserSession {
     // restores the page.
     if (!fresh && this.sdkSessionId) options.resume = this.sdkSessionId;
 
-    console.log(`[session ${this.userId}] model=${options.model ?? '(default)'} effort=${options.effort ?? '(default)'} thinking=${JSON.stringify(options.thinking ?? null)}`);
+    // THE PROVIDER IS IN THE LINE NOW. The log that recorded this defect said
+    // `model=opus[1m]` and was telling the truth — the model HAD switched. It
+    // could not say the request was still going to the gateway, because
+    // nothing in this process knew where a turn was going.
+    console.log(`[session ${this.userId}] model=${options.model ?? '(default)'} via=${route.provider}`
+      + ` effort=${options.effort ?? '(default)'} thinking=${JSON.stringify(options.thinking ?? null)}`
+      + (options.maxTurns ? ` maxTurns=${options.maxTurns}` : '')
+      + (route.dropped.length ? ` dropped=${route.dropped.map((d) => d.what).join(',')}` : ''));
     const q = query({ prompt: input, options });
     this.q = q;
     this.input = input;
@@ -1258,8 +1272,12 @@ class UserSession {
    * place — unlike cwd, which genuinely cannot carry the context.
    */
   async setModelRouted(want) {
-    const from = providerFor(this.model)?.model?.provider ?? null;
-    const to = providerFor(want)?.model?.provider ?? null;
+    // THE SAME VERDICT THE SPAWN PATH READS. Asking the router which provider
+    // serves each name is what makes "within one provider" a fact rather than
+    // a second opinion — and first-party now HAS a provider name, so opus to
+    // opus-with-a-different-alias no longer looks like a provider change.
+    const from = routeTurn({ model: this.model }).provider;
+    const to = routeTurn({ model: want }).provider;
     if (from === to) {
       await this.q.setModel(want || undefined);
       this.model = want || null;
@@ -1699,12 +1717,21 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url === '/api/models') {
-      const models = [...await session.q.supportedModels(), ...gatewayModels()];
+      // The menu is DERIVED from the same verdict the spawn path reads, so a
+      // row cannot claim a reachability the routing disagrees with. The SDK's
+      // per-model capabilities and the golden record's are merged there, not
+      // concatenated here — they were always the same shape.
       return json(res, 200, {
-        models,
+        models: menu({ sdkModels: await session.q.supportedModels() }),
         current: session.model,
         effort: session.effort,
         activeEffort: session.activeEffort,
+        thinking: session.thinking,
+        cache: session.cache,
+        // Where the credentials came from, and what ambient routing this
+        // process is refusing to inherit — both states a person can now see.
+        providers: providerSources(),
+        ambient: session.route?.ambient ?? [],
       });
     }
 
@@ -1728,9 +1755,17 @@ const server = http.createServer(async (req, res) => {
       // The page only offers levels the model names, but the server does not
       // take the page's word for it: an effort a model cannot take would send
       // a parameter the gateway rejects, arriving as a dead turn.
-      const routedNow = providerFor(session.model);
-      if (effort && routedNow?.model && !routedNow.model.supportedEffortLevels?.length) {
-        return json(res, 400, { error: `${session.model} has no effort levels` });
+      const probe = routeTurn({ model: session.model, effort });
+      const refused = probe.dropped.find((d) => d.what === 'effort');
+      if (refused) {
+        // THE ROUTER'S OWN REASON, not a second sentence written here that
+        // could drift from it. Where the provider has no ladder at all the
+        // level still means something — a turn ceiling — so say what it bought.
+        const ceiling = probe.options.maxTurns;
+        return json(res, 400, {
+          error: refused.why,
+          appliesAs: ceiling ? `a ${ceiling}-turn ceiling` : null,
+        });
       }
       // Session-scoped: applyFlagSettings is streaming-input-mode only, which
       // is why each user keeps one long-lived query rather than one per turn.
@@ -1750,6 +1785,23 @@ const server = http.createServer(async (req, res) => {
       session.restart();
       session.broadcast({ t: 'notice', text: `thinking → ${want ?? 'default'} (new session)` });
       return json(res, 200, { ok: true, thinking: want });
+    }
+
+    if (url === '/api/cache' && req.method === 'POST') {
+      const { cache } = await readBody(req);
+      const want = cache === true || cache === false ? cache : null;
+      session.cache = want;
+      writeState(userId, { cache: want });
+      // DISABLE_PROMPT_CACHING is read by the CLI at spawn, so this is a
+      // query() option in everything but name and changing it means a new one.
+      session.restart();
+      const caps = routeTurn({ model: session.model, cache: want }).capabilities.promptCache;
+      session.broadcast({
+        t: 'notice',
+        text: `prompt cache → ${want === null ? 'provider default' : want ? 'on' : 'off'} (new session)`
+          + (caps.verified ? '' : ` — ${session.model ?? 'this provider'}'s caching is unverified, so it is not relied on`),
+      });
+      return json(res, 200, { ok: true, cache: want, capability: caps });
     }
 
     if (url === '/api/cwd' && req.method === 'POST') {
