@@ -943,3 +943,30 @@ footer {
 .llmField select:disabled { border-color: transparent; color: var(--dim); }
 .llmKey { font-family: var(--mono); letter-spacing: .08em; }
 .llmHint { color: var(--dim); font-family: var(--mono); font-size: .76em; }
+
+/* The page's own dialog. A browser prompt cannot hold six fields, carries no
+   styling, and reads as something the site did not mean to show. */
+.llmDialogBack {
+  position: fixed; inset: 0; z-index: 40;
+  background: rgba(10, 9, 7, .72);
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+}
+.llmDialog {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  padding: 16px 18px;
+  width: min(460px, 100%);
+  display: flex; flex-direction: column; gap: 9px;
+  max-height: 80vh; overflow-y: auto;
+}
+/* A destructive confirm is marked by its rule, not by shouting: the accent
+   changes, the type does not. */
+.llmDialog.danger { border-left-color: var(--err); }
+.llmDialog h2 { font-size: 1.02em; color: var(--fg-strong); margin: 0; }
+.llmDialogBar { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.llmError:empty { display: none; }
+.llmError { color: var(--err); font-size: .86em; margin: 0; }
+.llmCompany { color: var(--dim); font-size: .82em; }

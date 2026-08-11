@@ -35,7 +35,7 @@ export const SETTINGS_FILE = process.env.RM_LLM_SETTINGS
   || path.join(os.homedir(), '.agent-chat', 'llms.json');
 
 /** The shape every entry has. Every key present, every value a real value. */
-export const FIELDS = Object.freeze(['displayName', 'url', 'effort', 'thinking', 'cache']);
+export const FIELDS = Object.freeze(['displayName', 'company', 'url', 'effort', 'thinking', 'cache']);
 
 function read() {
   try {
@@ -64,9 +64,16 @@ function providerOf(model, stored) {
  * path cannot serve. A page that greys out `xhigh` while the server would
  * accept it is a page telling a different story from the machine.
  */
-export function legalFor(model, { thinking = null } = {}) {
+export function legalFor(model, { thinking = null, url = undefined } = {}) {
   const record = goldenRecordFor(model);
-  const caps = capabilitiesFor(record?.provider ?? FIRST_PARTY, record);
+  // A MODEL BEHIND A URL NOBODY HAS PROBED GETS NOTHING OFFERED. Falling back
+  // to the first-party ladder would show `xhigh` for a gateway that has never
+  // heard of effort — the menu promising what the turn cannot do, which is the
+  // shape this whole layer exists to stop. `capabilitiesFor` answers UNKNOWN
+  // for a provider it has no entry for, and unknown is the honest answer.
+  const declaredUrl = url === undefined ? (read()[model]?.url ?? null) : url;
+  const provider = record?.provider ?? (declaredUrl ? `gateway:${declaredUrl}` : FIRST_PARTY);
+  const caps = capabilitiesFor(provider, record);
   let effort = [...caps.effort.levels];
   const cap = thinking === 'disabled' ? caps.thinking.disabledMaxEffort : null;
   if (cap) {

@@ -26,6 +26,78 @@ import { els, el, busy, notice } from './dom.js';
 let rows = [];
 let gateways = [];
 
+/**
+ * An in-page dialog, because a browser prompt is not this page.
+ *
+ * THE OWNER, 2026-08-11: "why is it a google popup not a web page popup?"
+ * `window.prompt` is chrome the browser draws — it carries no styling, cannot
+ * hold more than one field, and on a page that already owns an overlay it
+ * reads as something the site did not mean to show. It was a stub, and a stub
+ * that ships is a decision nobody made.
+ *
+ * Resolves with the field values, or null when dismissed. One field named
+ * `_confirm` and it is a question rather than a form.
+ */
+function dialog({ title, lead, fields = [], ok = 'save', danger = false }) {
+  return new Promise((resolve) => {
+    const back = el('div', 'llmDialogBack');
+    const card = el('div', `llmDialog${danger ? ' danger' : ''}`);
+    card.append(el('h2', null, title));
+    if (lead) card.append(el('p', 'means', lead));
+
+    const inputs = new Map();
+    for (const f of fields) {
+      const wrap = el('div', 'llmField');
+      wrap.append(el('label', null, f.label));
+      let node;
+      if (f.options) {
+        node = el('select', 'llmChoice');
+        for (const option of f.options) {
+          const o = el('option', null, String(option.label ?? option));
+          o.value = String(option.value ?? option);
+          node.append(o);
+        }
+        if (f.value != null) node.value = String(f.value);
+      } else {
+        node = el('input', f.secret ? 'llmKey' : 'llmText');
+        if (f.secret) node.type = 'password';
+        node.value = f.value ?? '';
+        node.placeholder = f.placeholder ?? '';
+        node.spellcheck = false;
+        node.autocomplete = 'off';
+      }
+      if (f.onInput) node.addEventListener('change', () => f.onInput(node.value, inputs));
+      inputs.set(f.name, node);
+      wrap.append(node);
+      if (f.hint) wrap.append(el('span', 'llmHint', f.hint));
+      card.append(wrap);
+    }
+
+    const err = el('p', 'llmError');
+    card.append(err);
+
+    const bar = el('div', 'llmDialogBar');
+    const cancel = el('button', 'pill', 'cancel');
+    const confirm = el('button', `pill ${danger ? 'cancel' : 'on-off on'}`, ok);
+    const close = (value) => { back.remove(); resolve(value); };
+    cancel.addEventListener('click', () => close(null));
+    confirm.addEventListener('click', () => {
+      const out = {};
+      for (const [name, node] of inputs) out[name] = node.value;
+      close(out);
+    });
+    bar.append(cancel, confirm);
+    card.append(bar);
+    back.append(card);
+    // Dismissing by the backdrop is a cancel, never a save — a click that
+    // lands outside a form must not commit what is in it.
+    back.addEventListener('click', (e) => { if (e.target === back) close(null); });
+    els.settings.append(back);
+    card.querySelector('input, select')?.focus();
+    dialog.showError = (text) => { err.textContent = text; };
+  });
+}
+
 async function load() {
   const data = await (await fetch('/api/llms')).json();
   rows = data.models ?? [];
@@ -62,37 +134,43 @@ async function save(model, patch) {
  * now, and only when one is. So the question is asked when a turn is running,
  * not when "context would be lost" — context is not lost.
  */
-function mayInterrupt(field) {
+async function mayInterrupt(field) {
   if (!['thinking', 'cache', 'url'].includes(field)) return true;
   if (!busy) return true;
-  return window.confirm(
-    `A turn is running. Changing ${field} starts a new query and will interrupt `
-    + `the answer being written. The conversation itself is kept.\n\nContinue?`,
-  );
+  const out = await dialog({
+    title: 'a turn is running',
+    lead: `Changing ${field} starts a new query and will interrupt the answer `
+      + 'being written. The conversation itself is kept — the new query resumes it.',
+    ok: 'interrupt and change',
+    danger: true,
+  });
+  return out !== null;
 }
 
-/** The reuse popup: recognise a key, never see one. */
-function offerReuse(row, input) {
+/** The reuse offer: recognise a key, never see one. */
+async function offerReuse(row) {
   const others = gateways.filter((g) => g.gateway !== row.key?.gateway);
   if (!others.length) return false;
-  const list = others.map((g, i) => `${i + 1}. ${g.host}  (${g.fingerprint})`).join('\n');
-  const pick = window.prompt(
-    `Reuse a key you already saved?\n\n${list}\n\n`
-    + 'Type the number to reuse it here, or Cancel to type a new key.',
-  );
-  const chosen = others[Number(pick) - 1];
-  if (!chosen) return false;
-  fetch('/api/llms/key', {
+  const out = await dialog({
+    title: 'reuse a key you already saved?',
+    lead: 'The key is copied on the server — it is never sent to this page.',
+    ok: 'reuse it',
+    fields: [{
+      name: 'gateway',
+      label: 'saved keys',
+      options: others.map((g) => ({ value: g.gateway, label: `${g.host}  ·  ${g.fingerprint}` })),
+    }],
+  });
+  if (!out) return false;
+  const res = await fetch('/api/llms/key', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ url: row.url, sameAs: chosen.gateway }),
-  }).then(async (res) => {
-    const out = await res.json();
-    if (!res.ok) return notice(out.error ?? 'could not reuse that key', true);
-    input.value = out.masked;
-    notice(`key reused from ${chosen.host}`);
-    draw();
+    body: JSON.stringify({ url: row.url, sameAs: out.gateway }),
   });
+  const saved = await res.json();
+  if (!res.ok) { notice(saved.error ?? 'could not reuse that key', true); return false; }
+  notice(`key reused for ${saved.host}`);
+  await draw();
   return true;
 }
 
@@ -108,10 +186,10 @@ function keyField(row) {
   input.value = row.key ? row.key.masked : '';
   input.placeholder = row.key ? '••••••••' : 'paste a key, or reuse one';
   let offered = false;
-  input.addEventListener('focus', () => {
-    if (offered || !row.url) return;
+  input.addEventListener('focus', async () => {
+    if (offered || !row.url || row.key) return;
     offered = true;
-    if (offerReuse(row, input)) input.blur();
+    if (await offerReuse(row)) input.blur();
   });
   input.addEventListener('change', async () => {
     const value = input.value.trim();
@@ -147,7 +225,7 @@ function choiceField(row, field, options, label) {
   select.value = String(row[field]);
   select.disabled = options.length <= 1;
   select.addEventListener('change', async () => {
-    if (!mayInterrupt(field)) { select.value = String(row[field]); return; }
+    if (!await mayInterrupt(field)) { select.value = String(row[field]); return; }
     const raw = select.value;
     const value = field === 'cache' ? raw === 'true' : raw;
     const saved = await save(row.model, { [field]: value });
@@ -166,7 +244,7 @@ function textField(row, field, label, placeholder) {
   input.placeholder = placeholder;
   input.spellcheck = false;
   input.addEventListener('change', async () => {
-    if (!mayInterrupt(field)) { input.value = row[field] ?? ''; return; }
+    if (!await mayInterrupt(field)) { input.value = row[field] ?? ''; return; }
     const saved = await save(row.model, { [field]: input.value.trim() || null });
     if (saved) await draw();
   });
@@ -178,6 +256,7 @@ function drawRow(row, current) {
   const card = el('div', `llmRow${row.model === current ? ' current' : ''}`);
   const head = el('div', 'llmHead');
   head.append(el('span', 'name', row.displayName));
+  if (row.company) head.append(el('span', 'llmCompany', row.company));
   head.append(el('span', 'llmId', row.model));
   if (row.model === current) head.append(el('span', 'pill', 'in use'));
   head.append(el('span', 'llmVia', row.provider ?? row.url ?? ''));
@@ -185,6 +264,7 @@ function drawRow(row, current) {
 
   const grid = el('div', 'llmGrid');
   grid.append(textField(row, 'displayName', 'name', row.model));
+  grid.append(textField(row, 'company', 'company', 'Alibaba, Moonshot, Anthropic…'));
   grid.append(textField(row, 'url', 'gateway url', 'blank = first-party (your own OAuth)'));
   grid.append(keyField(row));
   // EFFORT IS NARROWED BY THINKING, and the row was given the narrowed list by
@@ -204,6 +284,95 @@ function drawRow(row, current) {
   return card;
 }
 
+/** What a gateway can be asked for, before there is a row to ask about. */
+async function legalFor(model, url, thinking) {
+  const res = await fetch('/api/llms/legal', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model, url, thinking }),
+  });
+  return res.json();
+}
+
+/**
+ * Add an llm — every field in one place.
+ *
+ * THE OWNER, 2026-08-11: "it only asks me for a model name? what is the
+ * company name, gateway url, api key, model name (only ask), effort level,
+ * thinking on/off?" All of it, and the effort list is narrowed by what the
+ * gateway can actually take rather than offered in full and refused later: a
+ * url nobody has probed has NO effort ladder, so the control says so instead
+ * of showing five levels the turn would reject.
+ */
+async function addLlm() {
+  // Asked first, because everything else depends on it: a gateway url decides
+  // which levels are legal, and first-party (blank) decides differently.
+  const first = await dialog({
+    title: 'add an llm',
+    lead: 'The model name is the only required field — it must be spelled exactly as the gateway spells it.',
+    ok: 'next',
+    fields: [
+      { name: 'model', label: 'model name (required)', placeholder: 'qwen3.8-max' },
+      { name: 'displayName', label: 'name for the llm', placeholder: 'blank = the model name', hint: 'what the dropdown shows' },
+      { name: 'company', label: 'company', placeholder: 'Alibaba, Moonshot, Anthropic…' },
+      { name: 'url', label: 'gateway url', placeholder: 'blank = first-party (your own OAuth)' },
+    ],
+  });
+  if (!first?.model?.trim()) return;
+  const model = first.model.trim();
+  const url = first.url?.trim() || null;
+
+  const legal = await legalFor(model, url, null);
+  const second = await dialog({
+    title: `${first.displayName?.trim() || model} — how it should run`,
+    lead: url
+      ? 'This gateway has not been probed, so only what is known to work is offered.'
+      : 'First-party: effort narrows automatically when thinking is off.',
+    ok: 'add it',
+    fields: [
+      {
+        name: 'thinking', label: 'thinking',
+        options: legal.thinking.map((t) => ({ value: t, label: t })),
+      },
+      {
+        name: 'effort', label: 'effort',
+        options: legal.effort.length
+          ? legal.effort.map((e) => ({ value: e, label: e }))
+          : [{ value: '', label: 'this provider has no effort levels' }],
+      },
+      { name: 'key', label: 'api key', secret: true, placeholder: url ? 'paste a key, or leave blank to reuse one' : 'not needed — first-party uses your OAuth' },
+    ],
+  });
+  if (!second) return;
+
+  const patch = {
+    displayName: first.displayName?.trim() || '',
+    company: first.company?.trim() || '',
+    url,
+    thinking: second.thinking || undefined,
+  };
+  if (second.effort) patch.effort = second.effort;
+
+  const saved = await save(model, patch);
+  if (!saved) return;
+
+  if (url && second.key?.trim()) {
+    const res = await fetch('/api/llms/key', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url, key: second.key.trim() }),
+    });
+    const out = await res.json();
+    if (!res.ok) notice(out.error ?? 'the llm was added, but the key was refused', true);
+    else notice(`${model} added — key saved for ${out.host}`);
+  } else if (url) {
+    notice(`${model} added — no key yet, so it will refuse rather than fall back`);
+  } else {
+    notice(`${model} added`);
+  }
+  await draw();
+}
+
 export async function draw() {
   const data = await load();
   const body = els.settingsBody;
@@ -215,12 +384,7 @@ export async function draw() {
   for (const row of rows) body.append(drawRow(row, data.current));
 
   const add = el('button', 'pill', '+ add an llm');
-  add.addEventListener('click', async () => {
-    const name = window.prompt('model name, exactly as the gateway spells it');
-    if (!name) return;
-    const saved = await save(name.trim(), { displayName: '', url: null });
-    if (saved) await draw();
-  });
+  add.addEventListener('click', addLlm);
   body.append(add);
 }
 

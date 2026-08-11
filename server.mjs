@@ -1785,6 +1785,19 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, saved);
     }
 
+    // WHAT WOULD BE LEGAL FOR SOMETHING THAT DOES NOT EXIST YET. The add form
+    // needs the same verdict the row and the save use, before there is a row
+    // to ask about — otherwise it offers `xhigh` for a gateway that has never
+    // heard of effort, and the refusal arrives after the owner has filled the
+    // form in.
+    if (url === '/api/llms/legal' && req.method === 'POST') {
+      const body = await readBody(req);
+      return json(res, 200, legalFor(body.model ?? '', {
+        thinking: body.thinking ?? null,
+        url: body.url ?? null,
+      }));
+    }
+
     if (url === '/api/llms/key' && req.method === 'POST') {
       const { url: gateway, key, sameAs } = await readBody(req);
       try {
