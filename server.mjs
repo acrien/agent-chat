@@ -55,6 +55,8 @@ const PORT = Number(flag('port', '8787'));
 const DEFAULT_CWD = path.resolve(flag('cwd', process.cwd()));
 const DATA_DIR = path.resolve(flag('data', path.join(os.homedir(), '.agent-chat')));
 const HOST = flag('host', '127.0.0.1');
+/** 'disabled' | 'adaptive'. A gateway maps disabled -> enable_thinking=false. */
+const THINKING = flag('thinking');
 
 /**
  * Reaching this page means running tools unprompted on this machine, so the
@@ -68,6 +70,39 @@ const HOST = flag('host', '127.0.0.1');
 const LOOPBACK = HOST === '127.0.0.1' || HOST === 'localhost' || HOST === '::1';
 const TOKEN = LOOPBACK ? '' : (flag('token') || crypto.randomBytes(16).toString('hex'));
 const KEY_COOKIE = 'agentchat_key';
+
+/**
+ * Gateway routing, loaded before any session starts.
+ *
+ * WITHOUT IT THE SITE SILENTLY BILLS THE WRONG ACCOUNT. `supportedModels()`
+ * lists gateway models because it reads ~/.claude.json, but nothing routes the
+ * request anywhere those models exist — so a restart that forgot the env sent
+ * `qwen3.8-max` to api.anthropic.com and got `invalid_request`, empty turn
+ * (2026-08-10). Worse than the error: with an Anthropic model selected it
+ * works perfectly and quietly spends the quota the gateway exists to protect.
+ *
+ * Read here rather than exported by whoever launches it, because "remember to
+ * source this first" is a step that gets skipped exactly once.
+ */
+const PROVIDER_ENV = flag('provider-env', path.join(os.homedir(), '.agent-chat', 'provider.env'));
+function loadProviderEnv(file) {
+  let text;
+  try { text = fs.readFileSync(file, 'utf8'); } catch { return []; }
+  const names = [];
+  for (const line of text.split('\n')) {
+    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+    if (!m) continue;
+    let [, name, value] = m;
+    value = value.trim().replace(/^(['"])(.*)\1$/, '$2');
+    process.env[name] = value;
+    names.push(name);
+  }
+  // An ambient API key outranks the gateway token and the turn comes back
+  // rejected and empty — lab.sh:221 says the same thing one layer down.
+  if (names.length) delete process.env.ANTHROPIC_API_KEY;
+  return names;
+}
+const PROVIDER_VARS = loadProviderEnv(PROVIDER_ENV);
 
 /** rainsmoke3's single entry point; absent is fine, the page just stays quiet. */
 const RM3_BIN = flag('rm3', path.join(os.homedir(), 'projects', 'rainsmoke3', 'ops', 'rm3'));
@@ -394,6 +429,7 @@ class UserSession {
     //: `effort`, which is what the user picked — null there means "default",
     //: and the whole point is to say what default resolves to.
     this.activeEffort = state.activeEffort ?? null;
+    this.thinking = state.thinking ?? THINKING ?? null;
     this.streaming = { main: new Set(), sub: new Set() };
     this.q = null;
     this.input = null;
@@ -616,6 +652,19 @@ class UserSession {
     this.broadcast({ t: 'heartbeat', ...payload });
   }
 
+  /** Tear down the CLI and start a new one.
+
+   * `thinking`, `model` at startup and `cwd` are query() options, fixed for a
+   * session's lifetime — changing one means a new query(), not a control
+   * request. The SDK session id is kept, so the conversation survives.
+   */
+  restart() {
+    try { this.q?.close?.(); } catch { /* already gone */ }
+    this.input?.close();
+    this.busy = false;
+    this.start();
+  }
+
   start({ fresh = false } = {}) {
     const input = createPushable();
     const options = {
@@ -641,6 +690,13 @@ class UserSession {
     const takesEffort = !(routed?.model) || Boolean(routed.model.supportedEffortLevels?.length);
     if (this.effort && takesEffort) options.effort = this.effort;
 
+    // THINKING OFF IS THE ANTHROPIC FORM, EVEN ON A QWEN MODEL. Probed against
+    // the Alibaba gateway 2026-08-10: `thinking:{type:"disabled"}` suppresses
+    // the thinking blocks; qwen's own `enable_thinking:false` is ignored there.
+    // So there is no per-provider branch — one field, honoured by both.
+    if (this.thinking === 'disabled') options.thinking = { type: 'disabled' };
+    else if (this.thinking === 'adaptive') options.thinking = { type: 'adaptive' };
+
     // The only honest source for the EFFECTIVE effort. `supportedModels()`
     // lists which levels a model allows but not which one is in force, and
     // the init response carries no effort at all — so an unset selector
@@ -663,6 +719,7 @@ class UserSession {
     // restores the page.
     if (!fresh && this.sdkSessionId) options.resume = this.sdkSessionId;
 
+    console.log(`[session ${this.userId}] model=${options.model ?? '(default)'} effort=${options.effort ?? '(default)'} thinking=${JSON.stringify(options.thinking ?? null)}`);
     const q = query({ prompt: input, options });
     this.q = q;
     this.input = input;
@@ -1673,6 +1730,17 @@ const server = http.createServer(async (req, res) => {
       writeState(userId, { effort: session.effort });
       session.broadcast({ t: 'notice', text: `effort → ${effort || 'default'}` });
       return json(res, 200, { ok: true });
+    }
+
+    if (url === '/api/thinking' && req.method === 'POST') {
+      const { thinking } = await readBody(req);
+      const want = thinking === 'disabled' || thinking === 'adaptive' ? thinking : null;
+      session.thinking = want;
+      writeState(userId, { thinking: want });
+      // thinking is a query() option, so it is fixed for a session's lifetime.
+      session.restart();
+      session.broadcast({ t: 'notice', text: `thinking → ${want ?? 'default'} (new session)` });
+      return json(res, 200, { ok: true, thinking: want });
     }
 
     if (url === '/api/cwd' && req.method === 'POST') {
