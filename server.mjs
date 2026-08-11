@@ -718,6 +718,18 @@ class UserSession {
       this.broadcast({ t: 'notice', text: `${d.what} ${JSON.stringify(d.asked)} not sent — ${d.why}` });
     }
 
+    // WHAT IS IN FORCE BECOMES WHAT THE PAGE SHOWS. The route may cap the
+    // effort — thinking off on Claude Opus 5 tops out at `high` — and until
+    // this line the session kept the level the owner had asked for, so the
+    // selector read `xhigh` while every turn ran at `high`. That gap IS the
+    // complaint this store was built for ("no way I know the setting of the
+    // server if it differs"), reappearing one layer in. The verdict wins, and
+    // it is written down where the page reads it.
+    if (route.options.effort && route.options.effort !== this.effort) {
+      this.effort = route.options.effort;
+      writeState(this.userId, { effort: this.effort });
+    }
+
     // The only honest source for the EFFECTIVE effort. `supportedModels()`
     // lists which levels a model allows but not which one is in force, and
     // the init response carries no effort at all — so an unset selector

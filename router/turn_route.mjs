@@ -197,6 +197,18 @@ export function routeTurn({
  * models; the first-party half was assumed reachable and never checked.
  */
 export function menu({ sdkModels = [] } = {}) {
+  // THE FLAT FIELDS ARE PART OF THE CONTRACT, not a convenience. `transport.js`
+  // reads `supportsEffort` and `supportedEffortLevels` to fill the effort
+  // selector, and this function replaced a list that carried them. It did not,
+  // so the selector saw an empty ladder and DISABLED ITSELF — reported by the
+  // owner 2026-08-11: "I cannot click on drop down for effort". A shape change
+  // in one place and a reader in another is two sites naming one thing; both
+  // spellings are emitted here until the reader is moved onto `capabilities`.
+  const flat = (caps) => ({
+    supportsEffort: caps.effort.levels.length > 0,
+    supportedEffortLevels: caps.effort.levels,
+  });
+
   const gateway = goldenModels().map((m) => {
     const route = routeTurn({ model: m.value });
     return {
@@ -207,17 +219,27 @@ export function menu({ sdkModels = [] } = {}) {
       reachable: route.reachable,
       missing: route.missing,
       capabilities: route.capabilities,
+      ...flat(route.capabilities),
     };
   });
   const first = sdkModels.map((m) => {
     const route = routeTurn({ model: m.value });
+    const levels = Array.isArray(m.supportedEffortLevels)
+      ? m.supportedEffortLevels
+      : route.capabilities.effort.levels;
     return {
       value: m.value,
       provider: FIRST_PARTY,
       displayName: m.displayName ?? m.value,
       description: m.description ?? '',
+      // The SDK names what a row actually resolves to; "Default (recommended)"
+      // does not tell you which LLM you are talking to, and the page prints
+      // this beside the name for exactly that reason.
+      resolvedModel: m.resolvedModel ?? null,
       reachable: route.reachable,
       missing: route.missing,
+      supportsEffort: m.supportsEffort ?? levels.length > 0,
+      supportedEffortLevels: levels,
       // The SDK reports these per model; the golden record spells them the same
       // way by hand. Same shape, two sources, one menu.
       capabilities: {

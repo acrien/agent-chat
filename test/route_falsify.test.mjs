@@ -222,6 +222,28 @@ guard('the menu and the routing cannot disagree — first-party included', () =>
   assert.deepEqual(opus.capabilities.effort.levels, ['low', 'high'], 'the SDK\'s per-model levels were ignored');
 });
 
+guard('the menu carries the fields the page actually reads', () => {
+  // THE REGRESSION THIS PINS, reported 2026-08-11: "I cannot click on drop
+  // down for effort". `menu()` replaced a list that carried `supportsEffort`
+  // and `supportedEffortLevels`; `transport.js` still read them, got
+  // undefined, computed an empty ladder and DISABLED the control. A shape
+  // change here and a reader there is two sites naming one thing, and the
+  // failure is silent: the page renders, the selector just cannot be used.
+  const sdk = [{
+    value: 'default', displayName: 'Default', resolvedModel: 'claude-opus-5',
+    supportsEffort: true, supportedEffortLevels: ['low', 'high', 'max'],
+  }];
+  const rows = menu({ sdkModels: sdk });
+  const first = rows.find((r) => r.value === 'default');
+  assert.equal(first.supportsEffort, true, 'the effort selector would disable itself');
+  assert.deepEqual(first.supportedEffortLevels, ['low', 'high', 'max']);
+  assert.equal(first.resolvedModel, 'claude-opus-5', 'the row cannot say which llm it resolves to');
+  // A provider with no ladder still answers the question, with `false`.
+  const q = rows.find((r) => r.value === 'qwen3.8-max');
+  assert.equal(q.supportsEffort, false);
+  assert.deepEqual(q.supportedEffortLevels, []);
+});
+
 guard('the strip list covers every variable any declared provider sets', () => {
   // A provider variable that is set but never stripped is the original defect
   // arriving through a new provider. Derived, so it cannot be forgotten.
