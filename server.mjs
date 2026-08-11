@@ -43,6 +43,11 @@ import * as store from './state.mjs';
 // for why two separate checks was the dropdown that selected nothing.
 import { routeTurn, menu } from './router/turn_route.mjs';
 import { providerSources } from './router/provider_registry.mjs';
+import { allSettings, legalFor, saveSettings } from './router/llm_settings.mjs';
+// `describe` is renamed at the boundary: in this file the bare word would read
+// as "describe something", and the one thing it must never be confused with is
+// a function that hands back a key.
+import { describe as describeKeys, gatewayId, saveKey, reuseKey } from './router/keys.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(HERE, 'public');
@@ -1735,6 +1740,65 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    // --- the llm config page ------------------------------------------
+    //
+    // ONE READER FOR WHAT IS LEGAL. The page greys out what the save would
+    // refuse because both ask `legalFor`, so a control cannot offer a
+    // combination the machine rejects — the same invariant that keeps the
+    // model menu from listing something the spawn path cannot serve.
+    if (url === '/api/llms') {
+      const listed = menu({ sdkModels: await session.q.supportedModels() }).map((m) => m.value);
+      const rows = allSettings(listed).map((s) => ({
+        ...s,
+        legal: legalFor(s.model, { thinking: s.thinking }),
+        // WHICH GATEWAY, NOT WHICH KEY. The row says whether a credential
+        // exists and how to recognise it; the secret itself has no route to
+        // this response.
+        key: s.url ? (describeKeys().find((k) => k.gateway === gatewayId(s.url)) ?? null) : null,
+      }));
+      return json(res, 200, { models: rows, keys: describeKeys(), current: session.model });
+    }
+
+    if (url === '/api/llms' && req.method === 'POST') {
+      const { model, patch } = await readBody(req);
+      let saved;
+      try {
+        saved = saveSettings(model, patch ?? {});
+      } catch (err) {
+        // REFUSED WITH THE REASON, and the reason names what WOULD be legal.
+        return json(res, 400, { error: String(err.message ?? err) });
+      }
+      // A SETTING FOR THE MODEL YOU ARE ON APPLIES NOW, or the page and the
+      // session disagree — which is the exact state this store was asked to
+      // end. Effort is a live control request; thinking and caching are
+      // query() options, so they need a new query.
+      if (model === session.model) {
+        const touched = Object.keys(patch ?? {});
+        if (touched.includes('effort')) {
+          try { await session.q.applyFlagSettings({ effortLevel: saved.effort }); } catch { /* reported below */ }
+        }
+        if (touched.includes('thinking') || touched.includes('cache') || touched.includes('url')) {
+          session.restart();
+        }
+        session.broadcast({ t: 'notice', text: `${model}: ${touched.join(', ')} → saved` });
+      }
+      return json(res, 200, saved);
+    }
+
+    if (url === '/api/llms/key' && req.method === 'POST') {
+      const { url: gateway, key, sameAs } = await readBody(req);
+      try {
+        // BY REFERENCE, NOT BY VALUE. The page never holds a secret, so
+        // "reuse the key from that gateway" is a name it sends rather than a
+        // string it was given — nothing to leak through a response or a
+        // cached page.
+        const out = sameAs ? reuseKey(sameAs, gateway) : saveKey(gateway, key);
+        return json(res, 200, out);
+      } catch (err) {
+        return json(res, 400, { error: String(err.message ?? err) });
+      }
+    }
+
     if (url === '/api/send' && req.method === 'POST') {
       const { text, images } = await readBody(req);
       const accepted = acceptImages(images);
@@ -1772,6 +1836,14 @@ const server = http.createServer(async (req, res) => {
       await session.q.applyFlagSettings({ effortLevel: effort || null });
       session.effort = effort || null;
       writeState(userId, { effort: session.effort });
+      // WRITTEN THROUGH TO THE CONFIG, so the quick selector and the config
+      // page cannot hold different answers for one model. Two paths to one
+      // setting is the divergence the config store was built to end; leaving
+      // this one writing only session state would have re-created it beside
+      // the fix. A model with no url is first-party and always saveable.
+      if (effort) {
+        try { saveSettings(session.model ?? 'default', { effort }); } catch { /* the machine refused it; the live query already has it */ }
+      }
       session.broadcast({ t: 'notice', text: `effort → ${effort || 'default'}` });
       return json(res, 200, { ok: true });
     }
@@ -1781,6 +1853,10 @@ const server = http.createServer(async (req, res) => {
       const want = thinking === 'disabled' || thinking === 'adaptive' ? thinking : null;
       session.thinking = want;
       writeState(userId, { thinking: want });
+      // Same write-through as effort: one setting, one stored answer.
+      if (want) {
+        try { saveSettings(session.model ?? 'default', { thinking: want }); } catch { /* refused; session state stands */ }
+      }
       // thinking is a query() option, so it is fixed for a session's lifetime.
       session.restart();
       session.broadcast({ t: 'notice', text: `thinking → ${want ?? 'default'} (new session)` });

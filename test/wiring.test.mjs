@@ -316,6 +316,15 @@ guard('the /restart control is wired', () => {
   assert.equal(typeof button.handlers.click, 'function', '/restart has no handler');
 });
 
+guard('the llm config control is wired', () => {
+  // A CONFIG PAGE NOBODY CAN OPEN is the same as no config page, and it fails
+  // silently: the module imports, the tests pass, and the button was never
+  // added. `jobs.js` binds its own opener for this reason; so does `llms.js`.
+  const button = document.getElementById('llmsOpen');
+  assert.ok(button, 'no llms control on the page');
+  assert.equal(typeof button.handlers.click, 'function', 'llms has no handler');
+});
+
 // The summary is LAST, and stays last. It was in the middle once: two cases
 // appended after it never ran, and the file reported `all wired` for them.
 console.log(fails.length ? `\n${fails.length} failed` : '\nall wired');

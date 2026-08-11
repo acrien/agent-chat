@@ -26,6 +26,7 @@ const els = {
   settings: $('settings'), settingsBody: $('settingsBody'),
   settingsTitle: $('settingsTitle'), settingsLead: $('settingsLead'),
   settingsOpen: $('settingsOpen'), settingsClose: $('settingsClose'),
+  llmsOpen: $('llmsOpen'),
 };
 
 function atBottom() {

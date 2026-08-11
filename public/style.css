@@ -903,3 +903,43 @@ footer {
 
 /* the source of each beat, in the log */
 .beatLog .row .src { color: var(--dim); flex: none; }
+
+/* --- the llm config page -------------------------------------------------
+   Structured like a job row and for the same reason: a left rule carries the
+   state, so "in use" is a position rather than a brightness. Nothing here
+   dims to say something — a greyed control means the machine refuses it, and
+   that has to be distinguishable from "less important". */
+.llmRow { border-left: 3px solid var(--line); padding: 2px 0 2px 11px; }
+.llmRow + .llmRow { margin-top: 14px; }
+.llmRow.current { border-left-color: var(--accent); }
+
+.llmHead { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.llmHead .llmId { color: var(--dim); font-family: var(--mono); font-size: .82em; }
+.llmHead .llmVia { color: var(--dim); font-size: .82em; margin-left: auto; }
+
+/* Two columns where there is room, one where there is not. The label sits
+   above its control so a long gateway url never squeezes the name out. */
+.llmGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 8px 12px;
+  margin-top: 7px;
+}
+.llmField { display: flex; flex-direction: column; gap: 3px; }
+.llmField label { color: var(--dim); font-size: .78em; letter-spacing: .02em; }
+.llmField input, .llmField select {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: .9em;
+}
+.llmField input:focus, .llmField select:focus { border-color: var(--accent); outline: none; }
+/* A disabled control is REFUSED, not decorative: it keeps full contrast and
+   loses its border, so it reads as "there is nothing to choose here" rather
+   than as text that has faded. */
+.llmField select:disabled { border-color: transparent; color: var(--dim); }
+.llmKey { font-family: var(--mono); letter-spacing: .08em; }
+.llmHint { color: var(--dim); font-family: var(--mono); font-size: .76em; }

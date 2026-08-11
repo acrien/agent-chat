@@ -6,6 +6,7 @@ import { addImages, clearPending } from './images.js';
 import { handle } from './events.js';
 import { fillEffort, labelDefaultEffort, loadModels, post, send } from './transport.js';
 import { openSettings, drawJobList } from './jobs.js';
+import './llms.js';
 import './splitter.js';
 
 // --- wiring ----------------------------------------------------------------
