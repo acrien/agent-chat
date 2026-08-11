@@ -18,6 +18,8 @@
  * same visible state: unsupported, unverified, and out of range.
  */
 import { providers, FIRST_PARTY } from './provider_registry.mjs';
+import { settingsFor } from './llm_settings.mjs';
+import { gatewayId, keyFor } from './keys.mjs';
 import { baseEnv, ambientRouting } from './ambient_env.mjs';
 import {
   capabilitiesFor, goldenRecordFor, goldenModels, TURNS_FOR_EFFORT, EFFORT_ORDER,
@@ -39,11 +41,48 @@ export function routeTurn({
   maxTurns = null, source = process.env,
 } = {}) {
   const record = goldenRecordFor(model);
-  const name = record?.provider ?? FIRST_PARTY;
-  const provider = providers().get(name) ?? {
-    name, transport: 'anthropic_gateway', reachable: false,
-    missing: `no provider named ${name} is declared`, env: {}, source: null,
-  };
+
+  // WHAT YOU CONFIGURED, WHERE YOU CONFIGURED IT. A stored setting is used
+  // only when one was actually stored: `settingsFor` always resolves a value,
+  // and treating a resolved value as a choice would be inventing a decision
+  // and then reporting it as yours — the failure this store exists to end,
+  // wearing the fix's clothes.
+  const saved = settingsFor(model);
+  const configured = saved.stored.length > 0;
+  if (configured) {
+    if (effort === null) effort = saved.effort;
+    if (thinking === null) thinking = saved.thinking;
+    if (cache === null) cache = saved.cache;
+  }
+
+  // A URL YOU DECLARED OUTRANKS THE CATALOGUE, and its key comes from the
+  // store outside every repository — never from this file, never synced.
+  let name;
+  let provider;
+  if (saved.url) {
+    const gateway = gatewayId(saved.url);
+    const secret = keyFor(saved.url);
+    name = gateway;
+    provider = {
+      name: gateway,
+      transport: 'anthropic_gateway',
+      reachable: Boolean(secret),
+      // SAYS SO RATHER THAN FALLING BACK. `ops/lab.sh` argues this for the pod
+      // and it is the same argument here: a run that silently used another
+      // account would spend the quota the separation exists to protect.
+      missing: secret ? null : `no key stored for ${gateway}`,
+      env: secret
+        ? { ANTHROPIC_BASE_URL: saved.url, ANTHROPIC_AUTH_TOKEN: secret }
+        : {},
+      source: 'the key store outside every repository',
+    };
+  } else {
+    name = record?.provider ?? FIRST_PARTY;
+    provider = providers().get(name) ?? {
+      name, transport: 'anthropic_gateway', reachable: false,
+      missing: `no provider named ${name} is declared`, env: {}, source: null,
+    };
+  }
   const caps = capabilitiesFor(name, record);
   const dropped = [];
   const options = {};
