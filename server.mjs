@@ -487,9 +487,11 @@ class UserSession {
    * back belongs to neither. A skipped sweep costs one interval; the offer is
    * still there.
    *
-   * CLAIMING IS WHAT ADVANCES THE CURSOR, on rainsmoke3's side, inside the
-   * claim. That is deliberate: this cannot take a batch and forget to advance,
-   * which would hand the agent the same turns on every sweep at full price.
+   * CLAIMING DOES NOT ADVANCE THE CURSOR — it marks the batch in flight, and
+   * the reader's own `rm3 review done:NNN` call is what moves the index (or
+   * puts the batch back, on 190). A claim that advanced would mark the turns
+   * read at the instant they were handed over, so a crash mid-read would
+   * leave an index saying they were reviewed.
    */
   async claimJob() {
     // NO CONNECTED-CLIENT REQUIREMENT. It used to also demand `this.clients.size`
@@ -601,6 +603,13 @@ class UserSession {
     // 101 read the batch · 102 read part of it · 190 could not · no call = 190,
     // because a turn that died before calling looks exactly like one that
     // never meant to, and both establish nothing.
+    //
+    // THE DECLARATION ALREADY TOOK EFFECT the moment the reader called it —
+    // rainsmoke3's declare() completed (or put back) the batch then. What
+    // runs here is the fallback for a turn that ended without calling
+    // anything, and an idempotent no-op when it did: `complete` with no batch
+    // in flight moves nothing, `unclaim` with nothing to put back returns
+    // nothing.
     let code = 0;
     try {
       code = Number(JSON.parse(await run(RM3_BIN, ['review', 'declared'])).code ?? 0);
