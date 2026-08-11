@@ -39,6 +39,26 @@ mkdir -p "$(dirname "$LOG")"
   echo "--- restart $(date -Is): pid $PID, ${#ARGV[@]} args, cwd $CWD"
 } >> "$LOG"
 
+# ARM THE REVIVE WATCH BEFORE THE KILL. This restart kills the very process
+# that would notice it failed, so nothing inside the server can check on it —
+# that half belongs to rainsmoke3's revive job, which polls from outside. The
+# watch is armed here, in the detached thing that survives the kill, so a
+# restart that does not come back is found by the poller instead of sitting
+# dead behind a page nobody is watching. Before this, a restart armed via the
+# server never armed a watch at all, and the failure it exists to catch had no
+# catcher. FAIL-OPEN: no rm3, no port, or a refused arm still restarts — a
+# gate that could break the restart on its own bug is worse than no watch.
+PORT=""
+for ((i = 0; i < ${#ARGV[@]}; i++)); do
+  if [ "${ARGV[$i]}" = "--port" ]; then PORT="${ARGV[$((i + 1))]}"; fi
+done
+RM3="${RM3_BIN:-$HOME/projects/rainsmoke3/ops/rm3}"
+if [ -n "$PORT" ] && [ -x "$RM3" ]; then
+  printf '{"what":"the chat server","url":"http://127.0.0.1:%s/api/health","was_pid":%s,"cwd":"%s","why":"restarting the chat server"}' \
+    "$PORT" "$PID" "$CWD" | "$RM3" revive expect >> "$LOG" 2>&1 \
+    || echo "restart: could not arm the revive watch" >> "$LOG"
+fi
+
 kill "$PID" 2>/dev/null
 for _ in $(seq 1 20); do
   [ -d "/proc/$PID" ] || break
