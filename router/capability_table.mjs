@@ -81,7 +81,24 @@ export const PROVIDER_CAPABILITIES = Object.freeze({
   [FIRST_PARTY]: {
     effort: { levels: ['low', 'medium', 'high', 'xhigh', 'max'], verified: true,
       note: 'reported per model by the SDK; the list here is the superset' },
-    thinking: { form: 'anthropic', verified: true },
+    // THINKING AND EFFORT ARE COUPLED HERE, AND NOTHING ELSE SAYS SO.
+    // MEASURED 2026-08-11, from a real turn on this site:
+    //
+    //   API Error: 400 output_config.effort 'xhigh' is not supported when
+    //   thinking is disabled on this model. Use effort 'high' or below, or
+    //   enable thinking.
+    //
+    // Claude Opus 5 accepts thinking:{type:'disabled'} only at effort `high`
+    // or below. Neither the SDK's `supportedModels()` nor the golden record
+    // can express a constraint BETWEEN two fields — they describe each field
+    // alone — so a table that models capabilities as independent axes will
+    // keep producing valid-looking invalid combinations.
+    thinking: {
+      form: 'anthropic',
+      verified: true,
+      disabledMaxEffort: 'high',
+      note: "Claude Opus 5 rejects thinking:{disabled} above effort 'high'",
+    },
     promptCache: {
       supported: true, verified: true, ttlSeconds: 300, explicitCreate: false,
       note: 'the CLI places its own cache_control breakpoints; 1h TTL exists but the SDK does not expose the choice',
@@ -141,6 +158,9 @@ const UNKNOWN_PROVIDER = Object.freeze({
 export const TURNS_FOR_EFFORT = Object.freeze({
   low: 8, medium: 20, high: 50, xhigh: 100, max: null,
 });
+
+/** Weakest to strongest, so a cap can be compared rather than special-cased. */
+export const EFFORT_ORDER = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
 
 /**
  * The capabilities in force for one model, provider defaults narrowed by the

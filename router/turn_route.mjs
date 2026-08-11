@@ -19,7 +19,9 @@
  */
 import { providers, FIRST_PARTY } from './provider_registry.mjs';
 import { baseEnv, ambientRouting } from './ambient_env.mjs';
-import { capabilitiesFor, goldenRecordFor, goldenModels, TURNS_FOR_EFFORT } from './capability_table.mjs';
+import {
+  capabilitiesFor, goldenRecordFor, goldenModels, TURNS_FOR_EFFORT, EFFORT_ORDER,
+} from './capability_table.mjs';
 
 /**
  * The complete verdict for one turn.
@@ -93,6 +95,33 @@ export function routeTurn({
       options.thinking = thinking === 'disabled' ? { type: 'disabled' } : { type: 'adaptive' };
     } else {
       dropped.push({ what: 'thinking', asked: thinking, why: `${name}'s thinking form is ${caps.thinking.form} — ${caps.thinking.note}` });
+    }
+  }
+
+  // THINKING OFF CAPS EFFORT, AND THE CAP IS SENT RATHER THAN ASSUMED.
+  //
+  // MEASURED 2026-08-11: a turn on this site died with `400 output_config.
+  // effort 'xhigh' is not supported when thinking is disabled on this model`
+  // while this router had sent NO effort at all — the log line read
+  // `effort=(default)`. The value came from the CLI's own persisted
+  // `effortLevel`, which nothing here can see.
+  //
+  // THAT IS THIS ROUTER'S OWN DEFECT ONE LAYER UP. Leaving a field unset does
+  // not mean the turn has no value for it; it means something else chose,
+  // out of sight — exactly what `ANTHROPIC_BASE_URL` did before the env was
+  // made complete. So when the combination is constrained, the effort is
+  // STATED, never left to whatever the CLI remembers.
+  const cap = thinking === 'disabled' ? caps.thinking.disabledMaxEffort : null;
+  if (cap) {
+    const ceiling = EFFORT_ORDER.indexOf(cap);
+    const chosen = options.effort ? EFFORT_ORDER.indexOf(options.effort) : Infinity;
+    if (chosen > ceiling) {
+      dropped.push({
+        what: 'effort',
+        asked: options.effort ?? '(whatever the CLI had persisted)',
+        why: `${caps.thinking.note} — sent '${cap}' instead, because thinking is off`,
+      });
+      options.effort = cap;
     }
   }
 

@@ -165,6 +165,31 @@ guard('thinking is one switch, honoured in the form the provider was probed for'
   assert.ok(k.dropped.find((d) => d.what === 'thinking'), 'the drop was silent');
 });
 
+guard('thinking off caps effort, and the cap is stated not assumed', () => {
+  // THE DEFECT, from a real turn 2026-08-11:
+  //   400 output_config.effort 'xhigh' is not supported when thinking is
+  //   disabled on this model. Use effort 'high' or below, or enable thinking.
+  // The router had sent NO effort — the CLI's persisted `effortLevel` chose,
+  // out of sight. Leaving a field unset does not mean the turn has no value
+  // for it, which is this router's own thesis applied one layer up.
+  const off = routeTurn({ model: 'claude-opus-5', thinking: 'disabled', source: AMBIENT });
+  assert.equal(off.options.effort, 'high', 'nothing was stated, so the CLI still decides');
+  assert.ok(off.dropped.find((d) => d.what === 'effort'), 'the cap was applied silently');
+
+  // An explicit choice at or below the cap is honoured untouched.
+  const low = routeTurn({ model: 'claude-opus-5', thinking: 'disabled', effort: 'low', source: AMBIENT });
+  assert.equal(low.options.effort, 'low');
+  assert.equal(low.dropped.length, 0);
+
+  // Thinking ON has no such constraint — the cap must not leak into it.
+  const on = routeTurn({ model: 'claude-opus-5', thinking: 'adaptive', effort: 'xhigh', source: AMBIENT });
+  assert.equal(on.options.effort, 'xhigh', 'the cap was applied where it does not apply');
+
+  // A provider with no effort ladder is unaffected by an effort cap.
+  const q = routeTurn({ model: 'qwen3.8-max', thinking: 'disabled', source: AMBIENT });
+  assert.ok(!('effort' in q.options), 'an effort was invented for a provider that has none');
+});
+
 guard('caching off is a declared variable, not a silence', () => {
   const off = routeTurn({ model: 'claude-opus-5', cache: false, source: AMBIENT });
   assert.equal(off.env.DISABLE_PROMPT_CACHING, '1');
